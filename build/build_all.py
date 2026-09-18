@@ -81,16 +81,24 @@ name = "legal-workbench" if SIDECAR else "法岩律师本地工作台"
 out = os.path.join(BUILD, "out", name)
 
 t0 = time.time()
-for label, script, args in STEPS:
+for _idx, (label, script, args) in enumerate(STEPS, 1):
     print("\n==> %s（%s）" % (label, script), flush=True)
     r = subprocess.run([PY, "-X", "utf8", os.path.join(BUILD, script)] + args,
                        cwd=BUILD, capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
-    tail = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()
-    for line in tail[-8:]:
+    full = ((r.stdout or "") + (r.stderr or "")).rstrip()
+    # 每步完整输出单独落盘：控制台只回显尾部，而在 CI 上排查必须看到全文
+    step_log = os.path.join(BUILD, "_step_%d_%s.log"
+                            % (_idx, os.path.splitext(script)[0]))
+    try:
+        with open(step_log, "w", encoding="utf-8") as fh:
+            fh.write("== %s（%s） exit=%s ==\n%s\n" % (label, script, r.returncode, full))
+    except OSError:
+        pass
+    for line in full.splitlines()[-30:]:
         print("    " + line)
     if r.returncode not in (0, 2):      # 2 = main.py 回退为源码，允许继续
-        print("[失败] %s 退出码 %d" % (script, r.returncode))
+        print("[失败] %s 退出码 %d（完整输出见 %s）" % (script, r.returncode, step_log))
         sys.exit(1)
 
 print("\n==> 检查 WebSocket 残留（防止 __version__ 启动崩溃）", flush=True)

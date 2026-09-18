@@ -86,13 +86,22 @@ jobs:
       - name: 构建 sidecar（Cython 原生化 + PyInstaller）
         run: bash tools/build_sidecar.sh
 
-      - name: 失败时导出构建日志
+      - name: 失败时把构建日志转成注解（便于远程诊断）
+        # CI 失败日志只有仓库管理员能在网页看（REST /logs 需要 admin 权限），
+        # 但 check-run 的 annotations 接口对公开仓库可匿名读取。
+        # 这一步把日志尾部 + 编译器环境信息发成一条 ::error:: 注解，
+        # 任何人拿到运行链接都能直接读到报错原文，不必让仓库主人手工复制。
+        if: failure()
+        run: python tools/ci_dump_build_log.py build
+
+      - name: 失败时上传构建日志
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: sidecar-log-${{ matrix.arch }}
           path: |
             build/_build_all.log
+            build/_step_*.log
             build/_pyi_build.log
             build/_pyi_build.log.crash
           if-no-files-found: warn
