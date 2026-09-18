@@ -201,8 +201,16 @@ jobs:
           fi
           echo "$files"
 
-          # Release 必须先存在才能上传资产；已存在则只刷新资产（--clobber 覆盖同名文件）
-          if ! gh release view "$tag" >/dev/null 2>&1; then
+          # Release 必须先存在才能上传资产。
+          # 注意：arm64 与 x64 是两个并行 job，可能同时走到这里抢着创建同一个 tag。
+          # 谁先建成功都行，后到的那个拿到"已存在"错误也不该让整个 job 失败，
+          # 所以下面用重试 + 以"视图能读到"作为唯一成功判据。
+          for i in 1 2 3 4 5; do
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "Release $tag 已存在，直接刷新资产"
+              break
+            fi
+            echo "尝试创建 Release $tag（第 $i 次）"
             gh release create "$tag" \
               --title "法岩律师本地工作台 ${ver}（macOS）" \
               --notes "macOS 版（Apple Silicon arm64 / Intel x64 各一份）。
@@ -212,7 +220,15 @@ jobs:
 
           · \`*_aarch64.dmg\` → Apple 芯片（M 系列）
           · \`*_x64.dmg\`     → Intel 芯片
-          · \`*.app.zip\`     → 不想用 dmg 时的备用形态（保留符号链接与可执行位）"
+          · \`*.app.zip\`     → 不想用 dmg 时的备用形态（保留符号链接与可执行位）" \
+              || echo "创建失败（多半是另一个架构刚建好），5 秒后复查"
+            sleep 5
+          done
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::Release $tag 创建失败，请检查 workflow 的 contents: write 权限"
+            exit 1
           fi
+
+          # 两个架构产出的是不同文件名，互不覆盖；--clobber 只用于重跑时刷新同名资产
           gh release upload "$tag" $files --clobber
           gh release view "$tag" --json url -q .url
