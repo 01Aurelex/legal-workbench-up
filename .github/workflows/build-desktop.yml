@@ -137,6 +137,13 @@ jobs:
         # ~/Library/Application Support，而不是 .app bundle 内部。
         run: python tests/check_config_paths.py
 
+      - name: PyInstaller spec 执行回归测试（命名空间里没有 __file__）
+        # 钉住「.spec 由 PyInstaller 以 exec() 执行」这一事实：
+        # 一旦 spec 里用 __file__ 定位目录，构建会在 NameError 处直接失败，
+        # 而 compileall 语法检查与冒烟自测都发现不了（macOS 构建连续失败两轮的根因）。
+        # 该测试用桩件复刻执行环境，不需要安装 PyInstaller。
+        run: python tests/check_spec_paths.py
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

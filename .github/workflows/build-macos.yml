@@ -83,6 +83,11 @@ jobs:
             cryptography Pillow watchdog pypdf openpyxl requests numpy "setuptools<81" \
             cython pyinstaller
 
+      - name: 先跑 spec 执行回归测试（1 秒，避免白烧一轮 macOS 构建）
+        # PyInstaller 用 exec() 执行 .spec，命名空间里没有 __file__；
+        # 这个坑曾让 macOS 构建连续失败两轮，且语法检查发现不了。
+        run: python tests/check_spec_paths.py
+
       - name: 构建 sidecar（Cython 原生化 + PyInstaller）
         run: bash tools/build_sidecar.sh
 

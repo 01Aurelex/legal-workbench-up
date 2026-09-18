@@ -14,13 +14,20 @@
 """
 
 # --------------------------------------------------------------------------
-# 路径解析：默认值全部相对「本脚本所在仓库」，可用 LW_* 环境变量覆盖。
+# 路径解析：默认值全部相对「本 spec 所在仓库」，可用 LW_* 环境变量覆盖。
 #   LW_SRC    源码根目录（含 server/ frontend/ data/），默认仓库根
-#   LW_BUILD  构建工作目录，默认本脚本所在目录（<repo>/build）
+#   LW_BUILD  构建工作目录，默认本 spec 所在目录（<repo>/build）
 #   LW_DIST   免安装发行版目录（可选，仅作前端回退来源）
+#
+# ⚠️ 这里不能用 __file__：PyInstaller 是用 exec(code, spec_namespace) 执行 .spec 的，
+#    它构造的命名空间里 **没有 __file__**，直接写会得到
+#        NameError: name '__file__' is not defined
+#    而 PyInstaller 会注入 SPECPATH（= 本 spec 所在目录）供 spec 使用。
+#    所以优先取 SPECPATH，仅在非 PyInstaller 环境（例如被 import）才回退 __file__。
 # --------------------------------------------------------------------------
 import os as _os
-_LW_BUILD = _os.path.dirname(_os.path.abspath(__file__))
+_LW_BUILD = _os.path.abspath(
+    globals().get("SPECPATH") or _os.path.dirname(_os.path.abspath(__file__)))
 _LW_ROOT = _os.path.dirname(_LW_BUILD)
 _LW_BUILD_SRC = _os.path.join(_LW_BUILD, "src")
 _LW_BUILD_OUT = _os.path.join(_LW_BUILD, "out")
