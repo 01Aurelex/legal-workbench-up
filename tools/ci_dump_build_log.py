@@ -27,7 +27,7 @@ import re
 import sys
 
 CHUNK = 3300          # 单条注解正文上限（平台约 3.7KB 处截断）
-MAX_ANN = 6           # 最多发几条注解
+MAX_ANN = 10          # 最多发几条注解（平台每个 check-run 允许 50 条）
 LONG_LINE = 500       # 超过此长度的行视为编译器命令行噪音，折叠之
 SUMMARY_BUDGET = 900_000
 
@@ -98,12 +98,67 @@ def _step_key(p):
     return int(m.group(1)) if m else -1
 
 
+def _probe_artifacts(build: str) -> str:
+    """直接探查产物现场。
+
+    为什么需要它：CI 步骤自己的 stdout（例如 build_sidecar.sh 的 [2/2] 校验）
+    在 REST 上是读不到的，一旦校验步骤判失败，外面只能看到
+    "Process completed with exit code 1"。这里在失败后于同一工作区里
+    把 build/out 的真实内容列出来，远程就能知道到底产出了什么。
+    """
+    lines = []
+    outdir = os.path.join(build, "out")
+
+    def listing(path, limit=40):
+        if not os.path.isdir(path):
+            lines.append("  <不存在: %s>" % path)
+            return
+        try:
+            entries = sorted(os.scandir(path), key=lambda e: e.name)
+        except OSError as e:
+            lines.append("  <无法列出 %s: %r>" % (path, e))
+            return
+        lines.append("  %s/（%d 项）" % (path, len(entries)))
+        for e in entries[:limit]:
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    lines.append("    [目录] %s" % e.name)
+                else:
+                    st = e.stat()
+                    lines.append("    %10d  %s%s" % (st.st_size, e.name,
+                                                     "  [可执行]" if os.access(e.path, os.X_OK) else ""))
+            except OSError as err:
+                lines.append("    <?> %s (%r)" % (e.name, err))
+        if len(entries) > limit:
+            lines.append("    ...（其余 %d 项省略）" % (len(entries) - limit))
+
+    lines.append("########## 产物现场 ##########")
+    lines.append("build 目录 = %s" % os.path.abspath(build))
+    listing(outdir, 20)
+    listing(os.path.join(outdir, "legal-workbench"), 60)
+
+    # PyInstaller 到底把可执行文件生成成了什么名字
+    pyi = os.path.join(build, "_pyi_build.log")
+    if os.path.isfile(pyi):
+        want = re.compile(r"Building EXE|EXE-00|checking EXE|distpath|Building COLLECT|"
+                          r"Appending PKG|Copying bootloader|Building PKG")
+        hits = []
+        with open(pyi, encoding="utf-8", errors="replace") as fh:
+            for i, ln in enumerate(fh, 1):
+                if want.search(ln):
+                    hits.append("    %6d | %s" % (i, ln.rstrip()[:220]))
+        lines.append("  _pyi_build.log 中与 EXE/COLLECT 相关的行（共 %d，末 10 行）：" % len(hits))
+        lines.extend(hits[-10:] or ["    <无匹配>"])
+    return "\n".join(lines)
+
+
 def _plan(build):
     """返回 [(标题, 正文)]，按「最可能含报错」排序。"""
     steps = sorted(glob.glob(os.path.join(build, "_step_*.log")), key=_step_key)
     pyi = os.path.join(build, "_pyi_build.log")
     crash = pyi + ".crash"
     allog = os.path.join(build, "_build_all.log")
+    shlog = os.path.join(build, "_sidecar_sh.log")
 
     plan = []
 
@@ -114,23 +169,27 @@ def _plan(build):
                 plan.append((title + " | " + os.path.basename(path),
                              _tail(_fold_long_lines(t), n)))
 
-    # 1) 失败步骤自己的日志（除非它只是 run_pyi 的空壳，见下方判断）
+    # ① 入口脚本自己的日志 + 产物现场：校验步骤失败时，这里才有答案
+    add("① 入口脚本日志", shlog, 2500)
+    plan.append(("①b 产物现场", _probe_artifacts(build)))
+
+    # ② 失败步骤自己的日志（run_pyi 的步骤日志只是空壳，见下方降级）
     fail_step = steps[-1] if steps else None
     fail_txt = _read(fail_step) if fail_step else ""
     if len(fail_txt.strip()) > 260:
-        add("① 失败步骤日志", fail_step, 3000)
-    # 2) PyInstaller 原始日志：报错一般就在末尾
-    add("② PyInstaller 日志", pyi, 7000)
-    # 3) faulthandler 崩溃现场（若 PyInstaller 是段错误，这里才是关键）
-    add("③ 崩溃现场", crash, 2500)
-    # 4) 失败的步骤日志（即使是空壳，也留一条以便确认确实没输出）
+        add("② 失败步骤日志", fail_step, 2500)
+    # ③ PyInstaller 原始日志
+    add("③ PyInstaller 日志", pyi, 6000)
+    # ④ faulthandler 崩溃现场
+    add("④ 崩溃现场", crash, 2000)
+    # ⑤ 失败的步骤日志（空壳也留一条，确认它确实没输出）
     if fail_step and len(fail_txt.strip()) <= 260:
-        add("④ 失败步骤日志（几乎为空）", fail_step, 600)
-    # 5) 总日志
-    add("⑤ 总日志", allog, 5000)
-    # 6) 之前各步骤日志（倒序，越晚越相关）
+        add("⑤ 失败步骤日志（几乎为空）", fail_step, 500)
+    # ⑥ 总日志
+    add("⑥ 总日志", allog, 4000)
+    # ⑦ 其余步骤日志（倒序）
     for p in reversed(steps[:-1]):
-        add("⑥ 前序步骤日志", p, 1200)
+        add("⑦ 前序步骤日志", p, 1000)
     return plan
 
 

@@ -29,27 +29,65 @@ export PYTHONIOENCODING=utf-8
 
 PY="${LW_PYTHON:-python3}"
 
-echo "[1/2] 构建 sidecar（Cython 原生化 + PyInstaller，首次或全量重编约 5-15 分钟）..."
-"$PY" -X utf8 build/build_all.py --sidecar
+# 本脚本（尤其是 [2/2] 校验）自己的输出在 CI 上只有仓库管理员能看
+# （REST /logs 需要 admin 权限），所以全部落一份到 build/_sidecar_sh.log，
+# 由 tools/ci_dump_build_log.py 在失败时转成公开可读的注解。
+SHLOG="$ROOT/build/_sidecar_sh.log"
+: >"$SHLOG" 2>/dev/null || true
+say() { echo "$@" | tee -a "$SHLOG"; }
 
-echo "[2/2] 校验产物..."
+say "[1/2] 构建 sidecar（Cython 原生化 + PyInstaller，首次或全量重编约 5-15 分钟）..."
+# 显式接住退出码：CI 上这一步的 stdout 只有管理员能看，所以退出码必须落进
+# _sidecar_sh.log，否则失败时外面只看到 "Process completed with exit code 1"。
+set +e
+"$PY" -X utf8 build/build_all.py --sidecar
+BUILD_RC=$?
+set -e
+say "[1/2] build_all.py 退出码 = $BUILD_RC"
+if [ "$BUILD_RC" -ne 0 ]; then
+    say "!! 构建失败，退出码 $BUILD_RC（详见 build/_build_all.log 与 build/_pyi_build.log）"
+    exit "$BUILD_RC"
+fi
+
+say "[2/2] 校验产物..."
 OUT="$ROOT/build/out/legal-workbench"
 EXE="$OUT/legal-workbench"
 
+{
+    echo "=== [2/2] 校验产物 @ $(date -u +%FT%TZ) ==="
+    echo "期望的可执行文件: $EXE"
+    echo "--- ls -la $ROOT/build/out ---"
+    ls -la "$ROOT/build/out" 2>&1 || true
+    echo "--- ls -la $OUT ---"
+    ls -la "$OUT" 2>&1 || true
+    echo "--- 顶层可执行文件（排除 .so/.dylib）---"
+    find "$OUT" -maxdepth 1 -type f -perm -u+x \
+        ! -name '*.so' ! -name '*.dylib' 2>&1 || true
+    echo "--- 全树名为 legal-workbench* 的文件 ---"
+    find "$OUT" -maxdepth 4 -name 'legal-workbench*' 2>&1 || true
+} >>"$SHLOG" 2>&1 || true
+
 if [ ! -f "$EXE" ]; then
-    echo "!! 未找到 $EXE —— 构建可能静默失败，请查看 build/_build_all.log 与 build/_pyi_build.log" >&2
+    say "!! 未找到 $EXE（-f 判定失败）"
+    say "   若上面 ls 里存在同名文件，说明是权限/符号链接差异；否则是命名不符预期"
     exit 1
 fi
+say "  -f \$EXE 通过"
 
 if [ ! -x "$EXE" ]; then
     chmod +x "$EXE"
-    echo "已补上可执行权限：$EXE"
+    say "  -x 未通过，已补上可执行权限：$EXE"
+else
+    say "  -x \$EXE 通过"
 fi
 
 if [ ! -f "$OUT/_internal/integrity.json" ]; then
-    echo "! 缺少 _internal/integrity.json（完整性清单），发行包启动时会跳过校验"
+    say "  ! 缺少 _internal/integrity.json（完整性清单），发行包启动时会跳过校验"
+else
+    say "  integrity.json 就位"
 fi
 
-SIZE="$(du -sm "$OUT" | awk '{print $1}')"
-echo "sidecar 就绪：$EXE（约 ${SIZE} MB）"
-echo "可直接运行 tools/build_tauri.sh 打包 .app / .dmg。"
+# du 在个别文件不可读时会返回非零，配合 set -o pipefail 会误杀整个脚本
+SIZE="$(du -sm "$OUT" 2>/dev/null | awk '{print $1}' || true)"
+say "sidecar 就绪：$EXE（约 ${SIZE:-?} MB）"
+say "可直接运行 tools/build_tauri.sh 打包 .app / .dmg。"
