@@ -22,6 +22,8 @@ on:
   # 不该被改个 README 之类的事情白白触发。
   push:
     branches: ["main"]
+    # 打 v* 标签 = 正式发布：构建完成后会把 dmg/zip 挂到同名 Release 上。
+    tags: ["v*"]
     paths:
       - "build/**"
       - "server/**"
@@ -33,7 +35,10 @@ on:
       - ".github/workflows/build-macos.yml"
 
 permissions:
-  contents: read
+  # 需要写权限才能把 dmg / zip 挂到 Release（见末尾「发布到 GitHub Release」一步）。
+  # 为什么必须挂 Release：Actions 的构件下载**要求登录 GitHub**，普通用户点开
+  # artifact 链接只会看到登录页；只有 Release 资产才有免登录的公开直链。
+  contents: write
 
 env:
   PYTHONUTF8: "1"
@@ -168,3 +173,46 @@ jobs:
           if-no-files-found: error
           # dmg / app.zip 本身已是压缩格式，再压一遍纯属浪费
           compression-level: 0
+
+      - name: 发布到 GitHub Release（免登录下载直链）
+        # 为什么要这一步：Actions 的构件下载要求登录 GitHub，普通用户拿不到 dmg；
+        # 只有 Release 资产才有不需要登录的公开直链。
+        # 触发时机：main 分支上的成功构建（每次刷新同一个 Release），
+        # 以及打 v* 标签时的正式发布（用标签名作为 Release 名）。
+        if: |
+          success() && (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ver=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          case "${GITHUB_REF_NAME}" in
+            v*) tag="${GITHUB_REF_NAME}" ;;
+            *)  tag="v${ver}-macos" ;;
+          esac
+          echo "release tag = $tag（版本 $ver）"
+
+          files=$(ls src-tauri/target/release/bundle/dmg/*.dmg dist-macos/*.zip 2>/dev/null || true)
+          if [ -z "$files" ]; then
+            echo "::error::没有可发布的产物"
+            exit 1
+          fi
+          echo "$files"
+
+          # Release 必须先存在才能上传资产；已存在则只刷新资产（--clobber 覆盖同名文件）
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "法岩律师本地工作台 ${ver}（macOS）" \
+              --notes "macOS 版（Apple Silicon arm64 / Intel x64 各一份）。
+
+          **这是 ad-hoc 签名、未经 Apple 公证的构建**，首次打开可能需要放行：
+          安装说明见仓库 README 的「macOS 安装」一节。
+
+          · \`*_aarch64.dmg\` → Apple 芯片（M 系列）
+          · \`*_x64.dmg\`     → Intel 芯片
+          · \`*.app.zip\`     → 不想用 dmg 时的备用形态（保留符号链接与可执行位）"
+          fi
+          gh release upload "$tag" $files --clobber
+          gh release view "$tag" --json url -q .url
