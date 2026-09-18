@@ -36,6 +36,12 @@ SHLOG="$ROOT/build/_sidecar_sh.log"
 : >"$SHLOG" 2>/dev/null || true
 say() { echo "$@" | tee -a "$SHLOG"; }
 
+# 出错/退出都留痕：CI 上本脚本的 stdout 读不到，只有落盘的这几行能告诉我们
+# 「到底死在哪一行、退出码是多少」。曾因为少了这个，白白多跑了两轮 CI。
+# 这里刻意不用 say()（不经管道），避免 trap 自身再触发一次管道失败。
+trap 'rc=$?; echo "!! 脚本在第 $LINENO 行失败，退出码 $rc" >>"$SHLOG" 2>/dev/null || true' ERR
+trap 'rc=$?; echo "== 脚本结束，退出码 $rc ==" >>"$SHLOG" 2>/dev/null || true' EXIT
+
 say "[1/2] 构建 sidecar（Cython 原生化 + PyInstaller，首次或全量重编约 5-15 分钟）..."
 # 显式接住退出码：CI 上这一步的 stdout 只有管理员能看，所以退出码必须落进
 # _sidecar_sh.log，否则失败时外面只看到 "Process completed with exit code 1"。
@@ -87,7 +93,15 @@ else
     say "  integrity.json 就位"
 fi
 
-# du 在个别文件不可读时会返回非零，配合 set -o pipefail 会误杀整个脚本
-SIZE="$(du -sm "$OUT" 2>/dev/null | awk '{print $1}' || true)"
-say "sidecar 就绪：$EXE（约 ${SIZE:-?} MB）"
+# 体积统计：用 Python 而不是 `du | awk`。
+# 曾在这行踩坑：`du -sm X | awk ...` 在 runner 上既没输出也没让脚本走到下一行
+# （日志停在上一句），配合 set -e/-o pipefail 直接判失败。
+# Python 是既有依赖，且不受管道/退出码影响。
+SIZE_MB="$("$PY" -c "import os,sys;t=0
+for r,_d,fs in os.walk(sys.argv[1]):
+    for x in fs:
+        try: t+=os.path.getsize(os.path.join(r,x))
+        except OSError: pass
+print('%.1f'%(t/1048576.0))" "$OUT" 2>/dev/null || true)"
+say "sidecar 就绪：$EXE（约 ${SIZE_MB:-?} MB）"
 say "可直接运行 tools/build_tauri.sh 打包 .app / .dmg。"
