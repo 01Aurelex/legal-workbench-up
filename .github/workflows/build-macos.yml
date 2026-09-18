@@ -70,12 +70,18 @@ jobs:
           workspaces: src-tauri
 
       - name: 安装 Python 依赖
-        # 只装核心依赖：OCR / 语音等重型引擎在 legal-workbench.spec 的 excludes 里
-        # 已被排除出发行包（均为函数内延迟导入），装它们只会拖长构建时间。
+        # 与 requirements.txt 保持"核心一致"：
+        #   · OCR / 语音等重型引擎（rapidocr / faster-whisper / ctranslate2 / onnxruntime）
+        #     已被 legal-workbench.spec 的 excludes 排除出发行包，且均为函数内延迟导入，
+        #     装它们只会拖长构建时间，故不装。
+        #   · 但 spec 的 hiddenimports 显式声明了 pkg_resources / setuptools / numpy，
+        #     且 requirements.txt 明确要求 setuptools<81（81+ 已移除 pkg_resources）。
+        #     这里必须一并装，否则 macOS 包与 Windows 发行版会出现依赖差异。
         run: |
           python -m pip install --upgrade pip
           python -m pip install fastapi "uvicorn>=0.29" python-multipart python-docx \
-            cryptography Pillow watchdog pypdf openpyxl requests cython pyinstaller
+            cryptography Pillow watchdog pypdf openpyxl requests numpy "setuptools<81" \
+            cython pyinstaller
 
       - name: 构建 sidecar（Cython 原生化 + PyInstaller）
         run: bash tools/build_sidecar.sh
