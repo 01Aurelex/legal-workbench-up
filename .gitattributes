@@ -12,6 +12,8 @@
 *.yaml    text eol=lf
 *.toml    text eol=lf
 *.rs      text eol=lf
+# shell 脚本必须 LF：CRLF 会让 macOS / Linux 上的 shebang 解析失败
+*.sh      text eol=lf
 *.md      text eol=lf
 *.txt     text eol=lf
 *.spec    text eol=lf

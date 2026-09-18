@@ -1,0 +1,150 @@
+name: build-macos
+
+# 在 GitHub 托管的 macOS 机器上构建「苹果电脑可运行版本」，产出 .dmg / .app 构件。
+#
+# 为什么必须由 CI 来构建：
+#   PyInstaller、Cython 原生扩展、Rust 外壳都无法跨平台交叉编译，
+#   macOS 包只能在真实的 macOS 上产出（Windows 机器上做不到）。
+#   本仓库为公开仓库，GitHub 托管的 macOS runner 免费、不限时长。
+#
+# 产物：
+#   构件 legal-workbench-macos-{arm64,x64}
+#     ├── 法岩律师本地工作台_<版本>_aarch64.dmg / _x64.dmg    ← 拖进「应用程序」即可
+#     └── 法岩律师本地工作台_<arch>.app.zip                    ← ditto 打包，保留符号链接
+#
+# 注意：本工作流产出的包是 **ad-hoc 签名（未公证）** 的，
+#   Apple Silicon 上必须有签名才能运行，因此 CI 里显式使用 identity "-"；
+#   首次打开需按 README 的「首次运行」小节放行 Gatekeeper。
+
+on:
+  workflow_dispatch:
+  # 只在会实质影响 macOS 产物的路径变化时触发——一次 macOS 构建要跑几十分钟，
+  # 不该被改个 README 之类的事情白白触发。
+  push:
+    branches: ["main"]
+    paths:
+      - "build/**"
+      - "server/**"
+      - "frontend/**"
+      - "src-tauri/**"
+      - "tools/**"
+      - "requirements.txt"
+      - "package.json"
+      - ".github/workflows/build-macos.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
+jobs:
+  build:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15 # Apple Silicon (M 系列)
+            arch: arm64
+          - runner: macos-15-intel # Intel Mac
+            arch: x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装 Python 依赖
+        # 只装核心依赖：OCR / 语音等重型引擎在 legal-workbench.spec 的 excludes 里
+        # 已被排除出发行包（均为函数内延迟导入），装它们只会拖长构建时间。
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install fastapi "uvicorn>=0.29" python-multipart python-docx \
+            cryptography Pillow watchdog pypdf openpyxl requests cython pyinstaller
+
+      - name: 构建 sidecar（Cython 原生化 + PyInstaller）
+        run: bash tools/build_sidecar.sh
+
+      - name: 失败时导出构建日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-log-${{ matrix.arch }}
+          path: |
+            build/_build_all.log
+            build/_pyi_build.log
+            build/_pyi_build.log.crash
+          if-no-files-found: warn
+
+      - name: 安装前端依赖
+        run: npm install
+
+      - name: 打包 .app / .dmg（ad-hoc 签名）
+        # --bundles 显式指定，双保险：即便平台配置 tauri.macos.conf.json 未被合并，
+        # 也不会退回到基础配置里的 nsis 目标（macOS 上会直接报错）。
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: npx tauri build --bundles app,dmg
+
+      - name: 校验产物、sidecar 落位与签名
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          app=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
+          test -n "$app" || { echo "::error::没有产出 .app"; exit 1; }
+          echo "app = $app"
+
+          # 最容易静默失败的一步：sidecar 有没有真的被复制进 Resources
+          sidecar="$app/Contents/Resources/sidecar/legal-workbench"
+          ls -la "$sidecar" || { echo "::error::sidecar 未随包分发"; exit 1; }
+          echo "sidecar 大小：$(du -sh "$app/Contents/Resources/sidecar" | cut -f1)"
+
+          # ad-hoc 签名检查：未签名的可执行文件在 Apple Silicon 上会被直接杀掉
+          if codesign -dv --verbose=2 "$app" 2>&1 | grep -q 'Signature=adhoc'; then
+            echo "外层 .app 已 ad-hoc 签名"
+          else
+            echo "::error::外层 .app 未签名，Apple Silicon 上无法启动"
+            codesign -dv --verbose=2 "$app" 2>&1 || true
+            exit 1
+          fi
+          codesign -dv --verbose=2 "$sidecar" 2>&1 | head -5 || true
+
+          find src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -exec ls -la {} \;
+
+      - name: 打包 .app 为 zip（ditto 保留符号链接与可执行位）
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
+          name=$(basename "$app" .app)
+          mkdir -p dist-macos
+          ditto -c -k --sequesterRsrc --keepParent "$app" \
+            "dist-macos/${name}_${{ matrix.arch }}.app.zip"
+          ls -la dist-macos
+
+      - name: 上传构件
+        uses: actions/upload-artifact@v4
+        with:
+          name: legal-workbench-macos-${{ matrix.arch }}
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            dist-macos/*.zip
+          if-no-files-found: error
+          # dmg / app.zip 本身已是压缩格式，再压一遍纯属浪费
+          compression-level: 0

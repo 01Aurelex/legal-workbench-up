@@ -86,9 +86,16 @@ def _assign_job(proc: subprocess.Popen):
 
 def _candidates() -> tuple[Path | None, Path | None]:
     root = RESOURCES_DIR / "llm"
-    exe = root / "bin" / "llama-server.exe"
+    # llama.cpp 发行包的可执行文件名按平台区分：Windows 为 llama-server.exe，macOS / Linux 无后缀
+    names = ("llama-server.exe", "llama-server") if sys.platform == "win32" else ("llama-server",)
+    exe = None
+    for name in names:
+        cand = root / "bin" / name
+        if cand.exists():
+            exe = cand
+            break
     models = sorted((root / "models").glob("*.gguf")) if (root / "models").exists() else []
-    return (exe if exe.exists() else None), (models[0] if models else None)
+    return exe, (models[0] if models else None)
 
 
 def available() -> bool:

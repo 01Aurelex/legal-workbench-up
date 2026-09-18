@@ -2,7 +2,9 @@
 """授权与激活（一机一码，离线校验）。
 
 设计：
-- 机器指纹 = Windows MachineGuid + CPU ID + 首硬盘序列号 的 SHA-256，重装软件不变、换机即变；
+- 机器指纹 = 平台硬件标识的 SHA-256，重装软件不变、换机即变；
+  Windows：MachineGuid + CPU ID + 首硬盘序列号 + COMPUTERNAME；
+  macOS：  IOPlatformUUID + 机型标识 + 启动卷 UUID + 用户名；
 - 激活码 = Ed25519 签名的载荷（内嵌机器指纹），客户端只内置【公钥】，
   私钥仅由 license-admin 签发后端持有，因此即使逆向客户端也无法伪造激活码；
 - 未激活时仅【案件管理】可用（见 API_ALLOWED），其余接口返回 403 锁定；
@@ -81,14 +83,53 @@ def _powershell_hardware() -> tuple[str, str]:
         return "", ""
 
 
+def _mac_hardware() -> tuple[str, str, str]:
+    """macOS：取 IOPlatformUUID（等价于 Windows 的 MachineGuid）+ 机型标识 + 启动卷 UUID。
+
+    全部走系统自带命令（ioreg / sysctl / diskutil），不引入任何第三方依赖。
+    注意 ioPlatformUUID 在「同型号同批量」机器上偶有重复，因此叠加启动卷 UUID
+    与机型标识一起哈希，避免不同 Mac 算出同一个机器码。
+    """
+    def _sh(cmd: list[str], timeout: int = 5) -> str:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            return (r.stdout or "").strip()
+        except Exception:
+            return ""
+
+    uuid = ""
+    for line in _sh(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"]).splitlines():
+        if "IOPlatformUUID" in line:
+            uuid = line.split("=")[-1].strip().strip('"')
+            break
+
+    model = _sh(["sysctl", "-n", "hw.model"])
+
+    vol = ""
+    for line in _sh(["diskutil", "info", "/"]).splitlines():
+        if "Volume UUID" in line:
+            vol = line.split(":")[-1].strip()
+            break
+
+    return uuid, model, vol
+
+
 def machine_fingerprint() -> str:
-    """返回 64 位 hex 机器指纹（稳定标识本机）。"""
+    """返回 64 位 hex 机器指纹（稳定标识本机）。
+
+    注意：Windows 分支的取值来源与顺序【必须保持不变】，
+    否则已签发的激活码会全部失效。
+    """
     if _FP_CACHE.get("hash"):
         return _FP_CACHE["hash"]
-    guid = _registry_machine_guid()
-    cpu, disk = _powershell_hardware()
-    raw = "||".join([guid, cpu.replace(" ", ""), disk.replace(" ", ""),
-                     os.environ.get("COMPUTERNAME", "")])
+    if sys.platform == "darwin":
+        guid, cpu, disk = _mac_hardware()
+        extra = os.environ.get("USER", "")
+    else:
+        guid = _registry_machine_guid()
+        cpu, disk = _powershell_hardware()
+        extra = os.environ.get("COMPUTERNAME", "")
+    raw = "||".join([guid, cpu.replace(" ", ""), disk.replace(" ", ""), extra])
     h = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     _FP_CACHE["hash"] = h
     return h

@@ -5,6 +5,8 @@
 语音：resources/models 下的本地 faster-whisper 模型目录优先，避免运行时联网。"""
 from __future__ import annotations
 import io
+import os
+import shutil
 from pathlib import Path
 
 from . import db
@@ -14,11 +16,18 @@ _WHISPER_MODEL = None  # 进程内复用，避免每次转写重新加载模型
 
 
 def _bundled_tesseract() -> str | None:
-    for cand in (RESOURCES_DIR / "tesseract" / "tesseract.exe",
-                 RESOURCES_DIR / "tesseract" / "bin" / "tesseract.exe"):
-        if cand.exists():
-            return str(cand)
-    return None
+    """定位 Tesseract：先看随包内置目录，再退回系统 PATH。
+
+    可执行文件名按平台区分——Windows 是 tesseract.exe，macOS / Linux 无扩展名
+    （macOS 上多为 `brew install tesseract tesseract-lang`，落在 /opt/homebrew/bin）。
+    """
+    names = ("tesseract.exe", "tesseract") if os.name == "nt" else ("tesseract",)
+    for name in names:
+        for cand in (RESOURCES_DIR / "tesseract" / name,
+                     RESOURCES_DIR / "tesseract" / "bin" / name):
+            if cand.exists():
+                return str(cand)
+    return shutil.which("tesseract")
 
 
 def _whisper_model_path(prefer: str = "small") -> str:
@@ -39,8 +48,8 @@ def capabilities() -> dict:
     # ---- OCR ----
     bt = _bundled_tesseract()
     if bt:
-        caps["ocr"] = {"available": True, "engine": "内置Tesseract(chi_sim)",
-                       "note": f"使用安装包内置引擎：{bt}"}
+        caps["ocr"] = {"available": True, "engine": "Tesseract(chi_sim)",
+                       "note": f"使用本地 Tesseract 引擎：{bt}"}
     else:
         try:
             from rapidocr_onnxruntime import RapidOCR  # noqa
@@ -58,7 +67,8 @@ def capabilities() -> dict:
                     caps["ocr"] = {"available": True, "engine": "PaddleOCR", "note": "本地中文OCR"}
                 except Exception:
                     caps["ocr"]["note"] = ("未安装本地OCR引擎。测试版已内置 RapidOCR；"
-                                           "也可运行 tools/prepare_engines.ps1 准备内置引擎")
+                                           "也可运行 tools/prepare_engines.ps1（Windows）或 "
+                                           "tools/prepare_engines.sh（macOS）准备内置引擎")
     # ---- 语音转写 ----
     local = _whisper_model_path()
     try:
@@ -67,7 +77,8 @@ def capabilities() -> dict:
         caps["stt"] = {"available": True, "engine": "faster-whisper",
                        "note": f"本地语音转写；模型：{local}（{local_note}）"}
     except Exception:
-        caps["stt"]["note"] = "未安装本地语音引擎（运行 tools/prepare_engines.ps1 或 pip install faster-whisper）"
+        caps["stt"]["note"] = ("未安装本地语音引擎（运行 tools/prepare_engines.ps1 / "
+                               "tools/prepare_engines.sh，或 pip install faster-whisper）")
     # ---- 图片 / docx ----
     try:
         import PIL  # noqa

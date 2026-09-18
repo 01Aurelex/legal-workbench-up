@@ -31,8 +31,11 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 BUILD = os.path.abspath(SPECPATH)
 ROOT = os.path.join(BUILD, "src")
-ICON = os.path.join(BUILD, "app.ico")
 IS_MAC = sys.platform == "darwin"
+# 图标：Windows 用 .ico；macOS 的 App 图标必须是 .icns（.ico 无法作为 macOS 应用图标）
+_ICON_WIN = os.path.join(BUILD, "app.ico")
+_ICON_MAC = os.path.join(_LW_ROOT, "src-tauri", "icons", "icon.icns")
+ICON = _ICON_MAC if (IS_MAC and os.path.exists(_ICON_MAC)) else _ICON_WIN
 # Tauri 外壳内置后端：exe 必须叫 legal-workbench.exe（见 src-tauri/src/lib.rs）
 if os.environ.get("LW_SIDECAR") == "1":
     APP_NAME = os.environ.get("LW_EXE_NAME") or "legal-workbench"
@@ -171,7 +174,9 @@ coll = COLLECT(
     name=APP_NAME,
 )
 
-if IS_MAC:
+# 仅「独立桌面端」模式产出 .app；--sidecar 模式的产物是 Tauri 的资源目录，
+# 再包一层 .app 只会白白多出一份近 120 MB 的副本。
+if IS_MAC and os.environ.get("LW_SIDECAR") != "1":
     app = BUNDLE(
         coll,
         name=APP_NAME + ".app",

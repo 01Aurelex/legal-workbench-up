@@ -18,6 +18,12 @@ use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
 const BACKEND_PORT: u16 = 8765;
 
+/// 内置后端可执行文件名：Windows 带 .exe，macOS / Linux 无扩展名。
+#[cfg(windows)]
+const BACKEND_EXE: &str = "legal-workbench.exe";
+#[cfg(not(windows))]
+const BACKEND_EXE: &str = "legal-workbench";
+
 struct BackendChild(Mutex<Option<Child>>);
 
 fn random_token() -> String {
@@ -87,13 +93,15 @@ pub fn run() {
         .manage(BackendChild(Mutex::new(None)))
         .setup(|app| {
             let token = random_token();
-            // 后端固定安装在 <安装目录>/resources/sidecar/legal-workbench.exe
+            // 后端固定安装在 <资源目录>/sidecar/legal-workbench[.exe]
+            //   Windows：<安装目录>\resources\sidecar\legal-workbench.exe
+            //   macOS：  <App>.app/Contents/Resources/sidecar/legal-workbench
             let backend_exe = app
                 .path()
                 .resource_dir()
                 .expect("无法定位资源目录")
                 .join("sidecar")
-                .join("legal-workbench.exe");
+                .join(BACKEND_EXE);
             let child = spawn_backend(&backend_exe, &token)
                 .unwrap_or_else(|e| panic!("内置后端启动失败 {:?}: {}", backend_exe, e));
             app.state::<BackendChild>().0.lock().unwrap().replace(child);

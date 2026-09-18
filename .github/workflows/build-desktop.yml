@@ -117,8 +117,25 @@ jobs:
         run: |
           python -c "import json,pathlib; \
           [json.loads(pathlib.Path(p).read_text(encoding='utf-8')) for p in \
-          ['src-tauri/tauri.conf.json','src-tauri/capabilities/default.json','package.json']]; \
+          ['src-tauri/tauri.conf.json','src-tauri/tauri.macos.conf.json', \
+           'src-tauri/capabilities/default.json','package.json']]; \
           print('JSON 配置解析通过')"
+
+      - name: 校验工作流 YAML 与 entitlements.plist
+        run: |
+          python -m pip install --quiet pyyaml
+          python -c "import yaml,pathlib,sys; \
+          [yaml.safe_load(pathlib.Path(p).read_text(encoding='utf-8')) for p in \
+           sorted(str(q) for q in pathlib.Path('.github/workflows').glob('*.yml'))]; \
+          print('workflow YAML 解析通过')"
+          python -c "import plistlib,pathlib; \
+          d=plistlib.loads(pathlib.Path('build/entitlements.plist').read_bytes()); \
+          assert d, 'entitlements 为空'; print('entitlements.plist 解析通过，%d 个键' % len(d))"
+
+      - name: 平台路径决策回归测试（数据目录落在哪）
+        # 钉住 config.py 的平台分支：macOS 必须把数据写进
+        # ~/Library/Application Support，而不是 .app bundle 内部。
+        run: python tests/check_config_paths.py
 
       - uses: actions/setup-node@v4
         with:
