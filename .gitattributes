@@ -1,0 +1,52 @@
+# 统一换行符：仓库内一律 LF，检出到 Windows 时转 CRLF
+* text=auto
+
+# 明确按文本处理（统一 LF）
+*.py      text eol=lf
+*.js      text eol=lf
+*.mjs     text eol=lf
+*.css     text eol=lf
+*.html    text eol=lf
+*.json    text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.toml    text eol=lf
+*.rs      text eol=lf
+*.md      text eol=lf
+*.txt     text eol=lf
+*.spec    text eol=lf
+*.plist   text eol=lf
+*.iss     text eol=lf
+LICENSE   text eol=lf
+
+# Windows 专用脚本必须保持 CRLF，否则命令行解析会出错
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+*.ps1     text eol=crlf
+
+# 二进制：不做换行转换、不参与 diff
+*.docx    binary
+*.doc     binary
+*.xlsx    binary
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.bmp     binary
+*.pdf     binary
+*.exe     binary
+*.dll     binary
+*.pyd     binary
+*.zip     binary
+*.7z      binary
+*.mp3     binary
+*.wav     binary
+
+# 中文文件名在 GitHub 上正常显示（仓库统一 UTF-8）
+*.md    working-tree-encoding=UTF-8
+
+# 语言统计：把 .docx 模板从「文档」里排除，避免污染 GitHub 语言占比
+*.docx  linguist-documentation=false linguist-vendored
+data/templates/**        linguist-vendored
+data/law_library/**      linguist-documentation

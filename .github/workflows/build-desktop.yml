@@ -1,0 +1,157 @@
+name: ci
+
+# 本仓库是「源码可见」的产品源码仓库，CI 只做两件事：
+#   1) 确认这份源码可以构建、可以运行、核心链路没坏；
+#   2) 确认要公开的目录里没有私钥 / 运行时数据 / 大体积产物。
+#
+# 刻意不在这里产出安装包：sidecar 依赖本地模型（约 2.5 GB）与 Ed25519 签发物料，
+# 二者都不在版本库内；发行包始终在具备完整物料的本机构建机上产出。
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
+jobs:
+  # ---------------------------------------------------------- 后端 · 发布形态冒烟
+  backend:
+    name: 后端 · 发布形态冒烟自测
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 安装核心依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install fastapi "uvicorn>=0.29" python-multipart python-docx `
+            cryptography Pillow watchdog pypdf openpyxl requests
+
+      - name: 全量语法检查
+        run: python -m compileall -q server tests build tools
+
+      - name: 准备发布源树（去授权 / 同步前端 / 注入守卫）
+        run: python build/prep_src.py
+
+      - name: 校验发布源树 + 私钥扫描
+        run: python tests/check_release_tree.py --tree build/src
+
+      - name: 启动后端并跑完整冒烟自测
+        run: python tests/run_smoke.py --root build/src --skip-ocr
+
+      - name: 失败时导出后端日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-log
+          path: build/_smoke_server.log
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------- 发布卫生
+  hygiene:
+    name: 发布卫生 · 私钥与产物扫描
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 扫描私钥 / 运行时数据 / 构建产物
+        run: python tests/check_release_tree.py
+
+      - name: 确认仓库内没有 Ed25519 签发私钥与签发后台
+        shell: bash
+        run: |
+          set -e
+          bad=$(git ls-files | grep -Ei 'license-admin|issuer|private.*\.pem|\.secret\.key|workbench\.sqlite3' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::仓库中出现了不应入库的文件："
+            echo "$bad"
+            exit 1
+          fi
+          echo "干净：无签发私钥、无运行时数据。"
+
+      - name: 检查大文件（>10 MB 不予入库）
+        shell: bash
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            sz=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f")
+            if [ "$sz" -gt 10485760 ]; then
+              echo "::error file=$f::文件过大（$((sz/1048576)) MB），请改为脚本下载"
+              fail=1
+            fi
+          done < <(git ls-files)
+          exit $fail
+
+  # ---------------------------------------------------------- 外壳与前端
+  shell:
+    name: 外壳 · 配置校验与前端语法
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 校验 JSON 配置
+        run: |
+          python -c "import json,pathlib; \
+          [json.loads(pathlib.Path(p).read_text(encoding='utf-8')) for p in \
+          ['src-tauri/tauri.conf.json','src-tauri/capabilities/default.json','package.json']]; \
+          print('JSON 配置解析通过')"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 前端 JS 语法检查（原生 ESM，无构建步骤）
+        shell: bash
+        run: |
+          set -e
+          # 前端是原生 ESM：node --check 对 .js 默认按 CommonJS 解析会误报，
+          # 因此逐个复制成 .mjs 再检查。
+          tmp=$(mktemp -d)
+          files=$(git ls-files | grep -E '^frontend(_legacy_v0\.9\.11)?/.*\.js$' || true)
+          n=0
+          for f in $files; do
+            cp "$f" "$tmp/check.mjs"
+            if ! node --check "$tmp/check.mjs" >/dev/null 2>&1; then
+              echo "::error file=$f::JS 语法错误"
+              node --check "$tmp/check.mjs" || true
+              exit 1
+            fi
+            n=$((n+1))
+          done
+          echo "前端 JS 语法检查通过，共 $n 个文件"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: cargo check（Tauri 外壳，非阻塞）
+        working-directory: src-tauri
+        # 外壳的 resources 指向 ../build/out/legal-workbench，该目录由 Python 管线产出，
+        # CI 中并不存在；同时 Linux runner 缺少 WebKitGTK 等系统库。
+        # 因此这一步只作参考信号，不阻塞合入。
+        continue-on-error: true
+        run: cargo check --all-targets

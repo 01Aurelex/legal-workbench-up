@@ -1,0 +1,27 @@
+[package]
+name = "legal-workbench"
+version = "1.0.0"
+description = "法岩律师本地工作台（本地优先，数据不出本机）"
+authors = ["legal-workbench"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "legal_workbench_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+panic = "abort"
+lto = "thin"
+codegen-units = 16
+opt-level = "s"
+strip = true

@@ -1,0 +1,36 @@
+# 法岩律师本地工作台（测试版 v0.9.10）后端依赖
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+python-docx>=1.1.0
+cryptography>=42.0.0
+Pillow>=10.0.0
+watchdog>=4.0.0
+pypdf>=4.0.0
+openpyxl>=3.1
+requests>=2.31
+
+# —— 本地多模态引擎（模型全部离线运行，不上传外网）——
+# OCR：RapidOCR(ONNX)，中文识别模型随 wheel 内置，免安装系统程序
+rapidocr-onnxruntime==1.2.3
+numpy>=1.24
+# 本地语音转文字（接案笔录；模型预置于 resources/models/whisper-small）
+faster-whisper==1.2.1
+huggingface-hub>=0.20
+av>=11
+# ctranslate2/onnxruntime 原生库与 Python 版本、VC++ 运行库强相关，按解释器分档：
+# Python 3.13 及以下：onnxruntime==1.20.1、ctranslate2==4.6.0（VC++14.36 实测；4.7+ 加载模型崩溃）
+onnxruntime==1.20.1; python_version < "3.14"
+ctranslate2==4.6.0;  python_version < "3.14"
+# Python 3.14：旧版无 cp314 wheel，使用新版（要求 VC++ 2015-2022 x64 运行库 14.40+）
+onnxruntime==1.29.0; python_version >= "3.14"
+ctranslate2==4.8.2;  python_version >= "3.14"
+# ctranslate2 依赖 pkg_resources；setuptools 81+ 已移除，必须锁在 81 以下
+setuptools<81
+
+# 打包
+pyinstaller>=6.0
+
+# 备选 OCR（按需）：
+# pytesseract>=0.3.10   # 需另装 Tesseract 并勾选 chi_sim
+# paddleocr>=2.7

@@ -1,0 +1,32 @@
+
+# --------------------------------------------------------------------------
+# 路径解析：默认值全部相对「本脚本所在仓库」，可用 LW_* 环境变量覆盖。
+#   LW_SRC    源码根目录（含 server/ frontend/ data/），默认仓库根
+#   LW_BUILD  构建工作目录，默认本脚本所在目录（<repo>/build）
+#   LW_DIST   免安装发行版目录（可选，仅作前端回退来源）
+# --------------------------------------------------------------------------
+import os as _os
+_LW_BUILD = _os.path.dirname(_os.path.abspath(__file__))
+_LW_ROOT = _os.path.dirname(_LW_BUILD)
+_LW_BUILD_SRC = _os.path.join(_LW_BUILD, "src")
+_LW_BUILD_OUT = _os.path.join(_LW_BUILD, "out")
+_LW_DIST = _os.path.join(_LW_ROOT, "dist", "legal-workbench")
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Python 解释器与 Cython 原生模块需要可写可执行内存 -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <!-- 允许加载随包分发的第三方 dylib（onnxruntime / llama.cpp 等） -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <!-- 接案笔录语音录入 -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+</dict>
+</plist>

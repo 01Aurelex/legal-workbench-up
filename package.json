@@ -1,0 +1,15 @@
+{
+  "name": "legal-workbench-tauri",
+  "version": "1.0.0",
+  "private": true,
+  "description": "法岩律师本地工作台 Tauri 桌面端（内置 Python 后端与本地大模型）",
+  "scripts": {
+    "sidecar": "powershell -ExecutionPolicy Bypass -File tools/build_sidecar.ps1",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "powershell -ExecutionPolicy Bypass -File tools/build_tauri.ps1",
+    "rust:install": "powershell -ExecutionPolicy Bypass -File tools/install_rust.ps1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}

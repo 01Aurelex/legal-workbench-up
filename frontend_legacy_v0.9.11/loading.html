@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>法岩律师本地工作台</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{background:#0B0F14;color:#DCE3EA;
+    font-family:"Microsoft YaHei","PingFang SC",sans-serif;
+    display:grid;place-items:center;overflow:hidden}
+  .card{text-align:center;letter-spacing:.18em}
+  .mark{font-family:Georgia,"Times New Roman",serif;font-size:46px;color:#C6B38A;
+    letter-spacing:.32em;margin-bottom:26px;text-indent:.32em}
+  .name{font-size:19px;color:#E6EBEE;margin-bottom:10px}
+  .sub{font-size:12px;color:#8FA0AF;letter-spacing:.24em;margin-bottom:42px}
+  .bar{width:240px;height:2px;background:#23303D;border-radius:2px;margin:0 auto 22px;overflow:hidden}
+  .bar i{display:block;height:100%;width:40%;background:linear-gradient(90deg,transparent,#A6C5D6,transparent);
+    animation:slide 1.5s ease-in-out infinite}
+  @keyframes slide{0%{transform:translateX(-110%)}100%{transform:translateX(360%)}}
+  .tip{font-size:12px;color:#6E7E8D;letter-spacing:.14em}
+  .fail{color:#d48b8b;margin-top:18px;font-size:13px;letter-spacing:.08em;display:none;white-space:pre-line}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="mark">法岩</div>
+    <div class="name">律师本地工作台</div>
+    <div class="sub">LEGAL WORKBENCH · 本地优先</div>
+    <div class="bar"><i></i></div>
+    <div class="tip" id="tip">正在启动本地引擎与法律知识库…</div>
+    <div class="fail" id="fail"></div>
+  </div>
+<script>
+  window.showFail = function (msg) {
+    var t = document.getElementById('tip'); if (t) t.style.display = 'none';
+    var f = document.getElementById('fail'); if (f) { f.style.display = 'block'; f.textContent = msg; }
+  };
+</script>
+</body>
+</html>

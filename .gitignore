@@ -1,0 +1,140 @@
+# ============================================================
+#  法岩律师本地工作台 · Git 忽略规则
+#  原则：源码与必要素材入库；构建产物、运行时数据、密钥、
+#        体积巨大的模型/依赖一律不入库。
+# ============================================================
+
+# ---------------- Python ----------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+build/lib*/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---------------- Node / Tauri 前端 ----------------
+node_modules/
+.pnpm-store/
+src-tauri/target/
+# tauri-build 每次构建自动生成，无需入库（注意：.gitignore 不支持行尾注释，
+# 这里必须有独立一行，否则整行会被当成模式而失效）
+src-tauri/gen/schemas/
+src-tauri/.taurignore
+
+# ---------------- Rust（任何位置的构建缓存） ----------------
+target/
+*.rlib
+*.rmeta
+*.d
+*.pdb
+*.exp
+*.lib
+*.obj
+
+# ---------------- PyInstaller / Cython 构建产物 ----------------
+build/src/
+build/out/
+build/out-mac/
+build/tmp/
+build/_stripped_src/
+build/native_modules.txt
+build/_build_all.log
+build/_build_all.log.*
+build/_pyi_*.log
+build/_pyi_*.log.crash
+build/_tauri_build*
+build/*_old_*
+build/issuer_dist/
+build/issuer_pkg/
+build/issuer_work/
+build/legal-workbench/
+build/unified/
+dist/
+*.spec.bak
+
+# ---------------- 本地遗留打包链路（已被 Tauri + NSIS 取代） ----------------
+build/setup_win.iss
+build/build_win.cmd
+build/build_mac.sh
+build/build_intro_pdf.py
+build/cleanup.py
+build/obf/
+build/src_bak/
+build/build_log.txt
+build/_smoke_ws.txt
+build/_gh_port*
+# 激活签发后台的打包 zip（内含 Ed25519 私钥，严禁入库）
+build/*.zip
+build/issuer_*.zip
+# entitlements.plist 是 macOS 打包必需的输入文件，必须入库（见下方 -e 例外）
+# 图标目录：保留设计源（icon.svg / wrap.html / sidebar.html / icon_512.png / sidebar.png）
+build/icon/_*
+build/icon/backup_old_icons/
+build/icon/setup_raw_*.png
+build/icon/setup_icons_strip.png
+build/icon/setup_icon*.ico
+build/icon/extracted_*.png
+build/icon/check.png
+# Rust 自解压器：保留源码，只排除构建缓存与预编译二进制
+tools/installer-sfx/target/
+tools/installer-sfx/7za.exe
+tools/installer-sfx/7za.dll
+
+# ---------------- 运行时数据与密钥（绝不入库） ----------------
+data/workbench.sqlite3
+data/workbench.sqlite3-*
+data/audit.log
+data/.license
+data/.access_token
+data/.secret.key
+data/config.json
+data/backend.log
+data/startup_error.log
+data/export/
+data/invoices/
+data/vault/
+
+# ---------------- 模型与大体积素材（用脚本下载） ----------------
+resources/*
+!resources/README.md
+
+# ---------------- 授权签发后台（含 Ed25519 私钥，严禁入库） ----------------
+license-admin/
+# 备份/归档的签发物料同样严禁入库
+*issuer*/
+*.pem
+*.p12
+*.pfx
+*.jks
+id_rsa*
+id_ed25519*
+
+# ---------------- 个人收款/公众号二维码（涉及个人信息，不入库） ----------------
+# frontend_legacy_v0.9.11 的「关于」页用到的支付宝/微信收款码、公众号码、赞赏码。
+# 该版本前端仅为历史留存（构建时只取它的 loading.html），排除后不影响功能。
+frontend_legacy_v0.9.11/assets/
+
+# ---------------- 临时/调试 ----------------
+_scratch/
+*.log
+*.bug.log
+pyarmor.bug.log
+.tmp/
+*.swp
+*~
+
+# ---------------- 编辑器 / 系统 ----------------
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
