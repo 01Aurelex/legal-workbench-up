@@ -2,15 +2,12 @@ name: release-probe
 
 # 【一次性诊断工作流，用完即删】
 #
-# 上一轮已把范围缩到一行：复刻脚本的 set -x 轨迹停在
-#   + echo 'release tag = v0.0.0-probe4(版本 0.9.12)'
-# 之后整段 shell 就没了（退出码 1），而下一行正是
-#   files=$(ls src-tauri/target/release/bundle/dmg/*.dmg dist-macos/*.zip 2>/dev/null || true)
-# 带 `|| true` 的命令替换理论上不可能判死脚本 —— 所以本轮去掉了 set -e，
-# 逐步打 MARK，看究竟停在哪一条、以及那条命令的真实返回值。
-#
-# 同时重抓失败作业日志：上一轮从日志里按 "发布到 GitHub Release" 找 group 头没找到，
-# 本轮直接把清理后的日志「开头 + 结尾」都打出来，先确认日志格式与内容对不对。
+# 进展：
+#   · 已排除 gh 缺失 / token 无权限 / python3 读版本号（都能正常跑）
+#   · 复刻脚本带 set -x 时，轨迹停在 `echo "release tag = ..."` 之后，退出码 1
+#   · 但单独测 files=$(ls ... || true) 完全正常（M2/M3/M4 全 rc=0）
+#   → 结论：不能再靠"带 set -e 复刻 + 猜死在哪"，必须**逐行装退出码探针且不用 set -e**，
+#     让每条命令都跑完并自报返回值，才能看出是哪一条真的失败。
 #
 # 教训：一个步骤发多条 ::warning:: 会被静默丢弃（实测 10 条只落地 3 条）→ 每步只发一条。
 
@@ -35,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: A. 抓失败作业日志（首尾都打印）
+      - name: A. 抓失败作业日志（确认日志格式）
         shell: bash
         run: |
           set +e
@@ -46,23 +43,20 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -w 'http=%{http_code} size=%{size_download}' "$URL" 2>&1)
-          echo "curl: $INFO"
           sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$L" | tr -d '\000-\010\013\014\016-\037' > "$RUNNER_TEMP/clean.log"
-
           {
             echo "INFO=$INFO"
-            echo "--- 开头 500 字节 ---"
-            head -c 500 "$RUNNER_TEMP/clean.log"
+            echo "--- 开头 600 字节 ---"
+            head -c 600 "$RUNNER_TEMP/clean.log"
             echo ""
-            echo "--- 结尾 2300 字节 ---"
-            tail -c 2300 "$RUNNER_TEMP/clean.log"
+            echo "--- 结尾 2200 字节 ---"
+            tail -c 2200 "$RUNNER_TEMP/clean.log"
           } > "$RUNNER_TEMP/seg.log"
-
           B=$(sed -e 's/%/%25/g' "$RUNNER_TEMP/seg.log" | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
           [ -z "$B" ] && B="(空)"
           echo "::warning title=probe-A 日志首尾::${B:0:2900}"
 
-      - name: B. 逐步复现 files=$(ls ...)（无 set -e，打 MARK）
+      - name: B. 逐行探针复现发布脚本（不用 set -e）
         shell: bash
         run: |
           set +e
@@ -72,34 +66,42 @@ jobs:
 
           OUT="$RUNNER_TEMP/rel.txt"
           : > "$OUT"
+          P() { echo "== $1 rc=$? ==" >> "$OUT"; }
 
-          echo "M1: 造出的文件" >> "$OUT"
-          ls -la src-tauri/target/release/bundle/dmg dist-macos >> "$OUT" 2>&1
-          echo "M1 rc=$?" >> "$OUT"
+          echo "--- 起点 ---" >> "$OUT"
 
-          echo "M2: 不带 set -e，原样执行 files=\$(ls ... || true)" >> "$OUT"
-          set -x
+          ver=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])" 2>>"$OUT")
+          P "1 ver=[$ver]"
+
+          tag="v0.0.0-probe6"
+          case "main" in v*) echo "..." ;; *) tag="v${ver}-macos-probe" ;; esac
+          P "2 tag=[$tag]"
+
           files=$(ls src-tauri/target/release/bundle/dmg/*.dmg dist-macos/*.zip 2>/dev/null || true)
-          rc2=$?
-          set +x
-          echo "M2 rc=$rc2 files=[$files]" >> "$OUT"
+          P "3 files=[$files]"
 
-          echo "M3: 拆开看 ls 单独返回值" >> "$OUT"
-          ls src-tauri/target/release/bundle/dmg/*.dmg dist-macos/*.zip > "$RUNNER_TEMP/ls.out" 2>&1
-          echo "M3 ls_rc=$? out=$(head -c 300 "$RUNNER_TEMP/ls.out" | tr '\n' '|')" >> "$OUT"
+          if [ -z "$files" ]; then echo "EMPTY" >> "$OUT"; else echo "NOT EMPTY" >> "$OUT"; fi
+          P "4 判空结束"
 
-          echo "M4: 带 set -euo pipefail 再跑一次（子 shell 隔离）" >> "$OUT"
-          (
-            set -euo pipefail
-            echo "M4a 进入子 shell"
-            f2=$(ls src-tauri/target/release/bundle/dmg/*.dmg dist-macos/*.zip 2>/dev/null || true)
-            echo "M4b 赋值成功 f2=[$f2]"
-            if [ -z "$f2" ]; then echo "M4c 判定为空 → 会 exit 1"; exit 1; fi
-            echo "M4d 判定非空"
-          ) >> "$OUT" 2>&1
-          echo "M4 子 shell 退出码=$?" >> "$OUT"
+          for i in 1 2 3 4 5; do
+            gh release view "$tag" >/dev/null 2>&1
+            vrc=$?
+            P "5.$i release view vrc=$vrc"
+            if [ "$vrc" -eq 0 ]; then echo "已存在" >> "$OUT"; break; fi
+            gh release create "$tag" --title "probe" --notes "probe" >> "$OUT" 2>&1
+            P "6.$i release create"
+          done
+
+          gh release upload "$tag" $files --clobber >> "$OUT" 2>&1
+          P "7 release upload"
+
+          gh release view "$tag" --json url -q .url >> "$OUT" 2>&1
+          P "8 release view url"
+
+          gh release delete "$tag" --yes --cleanup-tag >> "$OUT" 2>&1
+          P "9 release delete"
 
           cat "$OUT"
           B=$(tail -c 2900 "$OUT" | sed -e 's/%/%25/g' | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
           [ -z "$B" ] && B="(空)"
-          echo "::warning title=probe-B 逐步复现::${B}"
+          echo "::warning title=probe-B 逐行探针::${B}"
