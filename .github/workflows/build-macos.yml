@@ -238,7 +238,8 @@ jobs:
           NOTES="macOS 版（Apple Silicon arm64 / Intel x64 各一份）。
 
           **这是 ad-hoc 签名、未经 Apple 公证的构建**，首次打开可能需要放行：
-          安装说明见仓库 README 的「macOS 安装」一节。
+          下载、选哪个包、以及首次打开被系统拦下时怎么放行，
+          见仓库 README 的「下载与安装」一节。
 
           · \`legal-workbench_<版本>_aarch64.dmg\` → Apple 芯片（M 系列）
           · \`legal-workbench_<版本>_x64.dmg\`     → Intel 芯片

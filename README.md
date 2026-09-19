@@ -11,6 +11,46 @@
 
 ---
 
+## 下载与安装
+
+预编译包挂在 Releases 上（**免登录直链**，不需要 GitHub 账号）：
+
+<https://github.com/01Aurelex/legal-workbench-up/releases>
+
+| 你的电脑 | 下载哪个 |
+|---|---|
+| macOS · Apple 芯片（M 系列） | `legal-workbench_<版本>_aarch64.dmg` |
+| macOS · Intel 芯片 | `legal-workbench_<版本>_x64.dmg` |
+| 不想用 dmg（两种情况都行） | `legal-workbench_arm64.app.zip` / `legal-workbench_x64.app.zip` |
+
+不确定芯片？点屏幕左上角的苹果菜单 → 「关于本机」，看「芯片」一栏：写 Apple M… 就是 Apple 芯片，
+写 Intel 就是 Intel。也可以在终端里执行 `uname -m`（`arm64` = Apple 芯片，`x86_64` = Intel）。
+
+### 首次打开被系统拦下怎么办
+
+macOS 版是 **ad-hoc 签名、未经 Apple 公证** 的构建（公证需要 99 美元/年的开发者账号），
+所以首次打开可能提示「已损坏」或「无法验证开发者」。任选一种方式放行：
+
+```bash
+# 方式一（推荐，最省事）
+xattr -dr com.apple.quarantine "/Applications/法岩律师本地工作台.app"
+```
+
+```text
+方式二：在「应用程序」里右键点应用图标 → 打开 → 弹窗里再点一次「打开」。
+```
+
+> **下载文件名是英文的，这是正常的**——GitHub 会自动去掉资源名里的中文
+> （本地产物本叫 `法岩律师本地工作台_0.9.12_aarch64.dmg`）。
+> dmg 内的应用本身仍叫「法岩律师本地工作台.app」，拖进「应用程序」后名字不变。
+
+### Windows
+
+Windows 版是独立构建的 NSIS 安装包（`.exe`），与 macOS 包互不通用
+（两个平台的包只能在各自系统上构建）。
+
+---
+
 ## 一、技术架构
 
 ```
