@@ -2,21 +2,20 @@ name: release-probe
 
 # 【一次性诊断工作流，用完即删】
 #
-# 背景：build-macos 的全部构建步骤都成功（sidecar / 打包 dmg / 校验 / 上传构件），
-# 只有最后一步「发布到 GitHub Release」失败：check-run 注解只有一条通用的
-# "Process completed with exit code 1."，看不到真实报错。
+# 目标：拿到 build-macos 第 17 步「发布到 GitHub Release」失败的**报错原文**。
+# check-run 注解只有一条通用的 "Process completed with exit code 1."，
+# 而 REST 的 /logs 匿名读是 403，所以让工作流用自己的 GITHUB_TOKEN（+actions: read）去抓。
 #
-# 已排除的可能（上一个 probe 实测）：gh 2.100.0 在 macOS runner 上存在、
-# gh auth 正常、`gh release create --draft` 返回 0、`gh release upload` 返回 0、
-# python3 能读出 tauri.conf.json 的版本号 → 说明 token 有 contents: write，
-# 问题不在权限、也不在 gh 本身。
-#
-# 本 probe 要拿到的是**真实那一步的日志原文**：
-#   1) 用 GITHUB_TOKEN + actions: read 直接下载失败作业的日志尾部；
-#   2) 若日志读不到，就原地复刻发布脚本（set -x）看死在哪一行。
-#
-# 输出方式：每条结论压进**一条** ::warning:: 注解（换行转义成 %0A）。
-# 教训：逐行发多条注解会被静默丢弃（实测一个步骤发 10 条只落地 3 条）。
+# 前两轮 probe 已经排除的：
+#   · gh 在 macOS runner 上存在（/opt/homebrew/bin/gh 2.100.0）、gh auth 正常
+#   · `gh release create --draft` rc=0、`gh release upload` rc=0 → token 有 contents: write
+#   · python3 能读出 src-tauri/tauri.conf.json 的版本号
+# 前两轮踩到的坑（已修）：
+#   · `gh api .../logs` 拿到响应却拒答：「response contains terminal escape sequences」
+#     → 改用 curl，curl 不在意转义
+#   · `{ set -e; ... }` 里的 set -e 是全局的，命令一失败整个 shell 立即退出，
+#     连后面的 cat/注解都执行不到 → 复刻脚本必须放进子 shell `( ... )` 隔离
+#   · 一个步骤发多条 ::warning:: 会被静默丢弃（实测 10 条只落地 3 条）→ 每步只发一条
 
 on:
   push:
@@ -35,32 +34,50 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      JOB_ID: "105748342255"
+      JOB_ID: "105748342255"   # 3b34e71 那轮 macOS arm64 的作业 id
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: A. 用 token 下载失败作业的日志尾部
+      - name: A. curl 抓失败作业日志，取发布步骤那一段
         shell: bash
         run: |
           set +e
           L="$RUNNER_TEMP/job.log"
-          gh api "/repos/01Aurelex/legal-workbench-up/actions/jobs/${JOB_ID}/logs" > "$L" 2>"$RUNNER_TEMP/job.err"
+          URL="https://api.github.com/repos/01Aurelex/legal-workbench-up/actions/jobs/${JOB_ID}/logs"
+          curl -sS -L --max-redirs 5 -o "$L" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -w 'http=%{http_code} size=%{size_download}\n' "$URL" > "$RUNNER_TEMP/curl.info" 2>&1
           rc=$?
-          echo "gh api logs rc=$rc size=$(wc -c < "$L" 2>/dev/null) err=$(head -c 300 "$RUNNER_TEMP/job.err" | tr '\n' '|')"
-          if [ "$rc" -ne 0 ]; then
-            B=$(head -c 600 "$RUNNER_TEMP/job.err" | sed -e 's/%/%25/g' | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
-            echo "::warning title=probe-A 日志不可读::${B}"
-            exit 0
-          fi
-          # 失败步骤的段落：从最后一次出现步骤名开始截取
-          awk '/发布到 GitHub Release/{n=NR} {a[NR]=$0} END{for(i=n;i<=NR && i<n+200;i++) print a[i]}' "$L" > "$RUNNER_TEMP/seg.log"
-          echo "--- 段落行数=$(wc -l < "$RUNNER_TEMP/seg.log") ---"
-          tail -c 3000 "$RUNNER_TEMP/seg.log" | tr -d '\000-\010\013\014\016-\037' \
-            | sed -e 's/%/%25/g' | awk 'BEGIN{ORS=""}{print $0 "%0A"}' > "$RUNNER_TEMP/body.txt"
-          echo "::warning title=probe-A 真实报错原文::$(cat "$RUNNER_TEMP/body.txt")"
+          echo "curl rc=$rc $(cat "$RUNNER_TEMP/curl.info")"
+          echo "首行: $(head -c 200 "$L" | tr '\n' '|')"
 
-      - name: B. 复刻发布脚本（set -x）定位死在哪一行
+          # 去 ANSI 转义与控制字符
+          sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$L" | tr -d '\000-\010\013\014\016-\037' > "$RUNNER_TEMP/clean.log"
+
+          # 取「发布到 GitHub Release」那个 group 的内容
+          awk '
+            /##\[group\]/ { g=NR }
+            /发布到 GitHub Release/ { t=NR }
+            { L[NR]=$0 }
+            END {
+              if (!t) { print "!! 日志里没找到发布步骤的 group 头"; exit }
+              for (i=t; i<=NR; i++) {
+                if (i>t && L[i] ~ /##\[endgroup\]/) { print L[i]; break }
+                print L[i]
+              }
+            }' "$RUNNER_TEMP/clean.log" > "$RUNNER_TEMP/seg.log"
+
+          echo "段长 $(wc -c < "$RUNNER_TEMP/seg.log") 字节"
+          if [ ! -s "$RUNNER_TEMP/seg.log" ]; then tail -c 2000 "$RUNNER_TEMP/clean.log" > "$RUNNER_TEMP/seg.log"; fi
+
+          B=$(tail -c 2900 "$RUNNER_TEMP/seg.log" | sed -e 's/%/%25/g' | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
+          [ -z "$B" ] && B="(空)"
+          echo "::warning title=probe-A 真实报错原文::${B}"
+
+      - name: B. 复刻发布脚本（子 shell 隔离 set -e）定位死在哪一行
         shell: bash
         run: |
           set +e
@@ -69,31 +86,29 @@ jobs:
           : > "dist-macos/法岩律师本地工作台_arm64.app.zip"
 
           OUT="$RUNNER_TEMP/rel.txt"
-          {
+          (
             set -x
             set -euo pipefail
             ver=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
-            tag="v0.0.0-probe3"
-            echo "release tag = $tag（版本 $ver）"
+            tag="v0.0.0-probe4"
+            echo "release tag = $tag(版本 $ver)"
             files=$(ls src-tauri/target/release/bundle/dmg/*.dmg dist-macos/*.zip 2>/dev/null || true)
-            if [ -z "$files" ]; then echo "::error::没有可发布的产物"; exit 1; fi
+            if [ -z "$files" ]; then echo "没有可发布的产物"; exit 1; fi
             echo "$files"
             for i in 1 2 3 4 5; do
               if gh release view "$tag" >/dev/null 2>&1; then echo "已存在"; break; fi
-              echo "尝试创建（第 $i 次）"
+              echo "尝试创建(第 $i 次)"
               gh release create "$tag" --title "probe" --notes "probe" || echo "创建失败"
               sleep 5
             done
             gh release upload "$tag" $files --clobber
             gh release view "$tag" --json url -q .url
-          } > "$OUT" 2>&1
-          set +e
-          echo "B 步整体退出码=$?" >> "$OUT"
-
-          echo "--- B 记录 ---"
+          ) > "$OUT" 2>&1
+          RC=$?
+          echo "B 复刻脚本退出码=$RC" >> "$OUT"
           cat "$OUT"
-          gh release delete v0.0.0-probe3 --yes --cleanup-tag >/dev/null 2>&1
+          gh release delete v0.0.0-probe4 --yes --cleanup-tag >/dev/null 2>&1
 
-          B=$(tail -c 2600 "$OUT" | tr -d '\000-\010\013\014\016-\037' \
-              | sed -e 's/%/%25/g' | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
-          echo "::warning title=probe-B 复刻脚本记录::${B}"
+          B=$(tail -c 2700 "$OUT" | sed -e 's/%/%25/g' | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
+          [ -z "$B" ] && B="(空)"
+          echo "::warning title=probe-B 退出码=$RC 复刻记录::${B}"
