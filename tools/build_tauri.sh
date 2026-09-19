@@ -53,7 +53,7 @@ else
     ICON="$ROOT/src-tauri/icons/icon.ico"
 fi
 if [ ! -f "$ICON" ]; then
-    echo "!! 缺少 $ICON。图标设计源在 build/icon/（icon.svg + icon_512.png），请先用 npx tauri icon 生成。" >&2
+    echo "!! 缺少 ${ICON}。图标设计源在 build/icon/（icon.svg + icon_512.png），请先用 npx tauri icon 生成。" >&2
     exit 1
 fi
 

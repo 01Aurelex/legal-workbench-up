@@ -144,6 +144,13 @@ jobs:
         # 该测试用桩件复刻执行环境，不需要安装 PyInstaller。
         run: python tests/check_spec_paths.py
 
+      - name: shell 全角字符吃变量名 回归测试（变量后紧跟中文全角标点）
+        # macOS runner 的 bash 是 /bin/bash 3.2.57：`$tag（` 会被当成变量 `tag（`，
+        # 在 set -u 下让整步 0 秒失败，且报错指向 shell 包装脚本，极难定位。
+        # bash -n 查不出来，本地 Git Bash 5.x 也复现不了，只能静态扫描。
+        # 同一个坑在 build-macos 的「发布到 GitHub Release」一步真实发生过。
+        run: python tests/check_shell_multibyte_vars.py .
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

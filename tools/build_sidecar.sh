@@ -39,8 +39,18 @@ say() { echo "$@" | tee -a "$SHLOG"; }
 # 出错/退出都留痕：CI 上本脚本的 stdout 读不到，只有落盘的这几行能告诉我们
 # 「到底死在哪一行、退出码是多少」。曾因为少了这个，白白多跑了两轮 CI。
 # 这里刻意不用 say()（不经管道），避免 trap 自身再触发一次管道失败。
-trap 'rc=$?; echo "!! 脚本在第 $LINENO 行失败，退出码 $rc" >>"$SHLOG" 2>/dev/null || true' ERR
-trap 'rc=$?; echo "== 脚本结束，退出码 $rc ==" >>"$SHLOG" 2>/dev/null || true' EXIT
+#
+# ⚠️ LW_DONE 是必须的：bash 3.2（macOS runner 的 /bin/bash）在 unbound variable
+# 这条路径上，进入 EXIT trap 时 $? 已经是 0，于是 EXIT trap 会把「脚本中途死掉」
+# 上报成成功。实测：`set -u` + `$var（全角` → 脚本死在那一行，但带 EXIT trap 时
+# 整个进程退出码为 0（不带 trap 才是 1）。所以这里用「没走到最后一行就不算成功」
+# 兜住：只有脚本真正执行到末尾才会置 LW_DONE=1。
+LW_DONE=0
+trap 'rc=$?; if [ "$LW_DONE" -ne 1 ] && [ "$rc" -eq 0 ]; then rc=1; fi
+      echo "!! 脚本在第 $LINENO 行失败，退出码 $rc" >>"$SHLOG" 2>/dev/null || true' ERR
+trap 'rc=$?; if [ "$LW_DONE" -ne 1 ] && [ "$rc" -eq 0 ]; then rc=1; fi
+      echo "== 脚本结束，退出码 $rc ==" >>"$SHLOG" 2>/dev/null || true
+      exit "$rc"' EXIT
 
 say "[1/2] 构建 sidecar（Cython 原生化 + PyInstaller，首次或全量重编约 5-15 分钟）..."
 # 显式接住退出码：CI 上这一步的 stdout 只有管理员能看，所以退出码必须落进
@@ -51,7 +61,7 @@ BUILD_RC=$?
 set -e
 say "[1/2] build_all.py 退出码 = $BUILD_RC"
 if [ "$BUILD_RC" -ne 0 ]; then
-    say "!! 构建失败，退出码 $BUILD_RC（详见 build/_build_all.log 与 build/_pyi_build.log）"
+    say "!! 构建失败，退出码 ${BUILD_RC}（详见 build/_build_all.log 与 build/_pyi_build.log）"
     exit "$BUILD_RC"
 fi
 
@@ -74,7 +84,7 @@ EXE="$OUT/legal-workbench"
 } >>"$SHLOG" 2>&1 || true
 
 if [ ! -f "$EXE" ]; then
-    say "!! 未找到 $EXE（-f 判定失败）"
+    say "!! 未找到 ${EXE}（-f 判定失败）"
     say "   若上面 ls 里存在同名文件，说明是权限/符号链接差异；否则是命名不符预期"
     exit 1
 fi
@@ -103,5 +113,8 @@ for r,_d,fs in os.walk(sys.argv[1]):
         try: t+=os.path.getsize(os.path.join(r,x))
         except OSError: pass
 print('%.1f'%(t/1048576.0))" "$OUT" 2>/dev/null || true)"
-say "sidecar 就绪：$EXE（约 ${SIZE_MB:-?} MB）"
+say "sidecar 就绪：${EXE}（约 ${SIZE_MB:-?} MB）"
 say "可直接运行 tools/build_tauri.sh 打包 .app / .dmg。"
+
+# 走到这里才算真成功（见上方 LW_DONE 的说明：bash 3.2 会把中途死亡上报成成功）
+LW_DONE=1

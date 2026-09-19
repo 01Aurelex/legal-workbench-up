@@ -93,6 +93,12 @@ jobs:
         # 这个坑曾让 macOS 构建连续失败两轮，且语法检查发现不了。
         run: python tests/check_spec_paths.py
 
+      - name: 检查 shell 脚本里的「全角字符吃变量名」陷阱（1 秒）
+        # macOS runner 的 bash 是 /bin/bash 3.2.57，`$tag（` 会被解析成变量 `tag（`，
+        # 在 set -u 下整步 0 秒失败。bash -n 查不出来，本地 Git Bash 5.x 也复现不了，
+        # 只能靠这个静态扫描兜住——发布步骤曾因此连续失败。
+        run: python tests/check_shell_multibyte_vars.py .
+
       - name: 构建 sidecar（Cython 原生化 + PyInstaller）
         run: bash tools/build_sidecar.sh
 
@@ -187,12 +193,18 @@ jobs:
         run: |
           set -euo pipefail
 
+          # ⚠️ 变量引用一律写成 ${var}，不要写成 $var 直接紧跟中文全角字符！
+          # macOS runner 的 `shell: bash` 用的是系统自带的 /bin/bash 3.2.57（不是 Homebrew 的 5.x）。
+          # bash 3.2 会把紧跟其后的全角字符（如「（」U+FF08）的字节一并并进变量名，
+          # 于是 `$tag（` 被当成变量 `tag（` —— 在 set -u 下直接 unbound variable 退出，
+          # 整个 job 会以「0 秒失败」告终，且报错行号指向 shell 内部包装脚本，极难定位。
+          # 静态防线见 tests/check_shell_multibyte_vars.py（本地 Git Bash 5.x 复现不了这个坑）。
           ver=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
           case "${GITHUB_REF_NAME}" in
             v*) tag="${GITHUB_REF_NAME}" ;;
             *)  tag="v${ver}-macos" ;;
           esac
-          echo "release tag = $tag（版本 $ver）"
+          echo "release tag = ${tag}（版本 ${ver}）"
 
           files=$(ls src-tauri/target/release/bundle/dmg/*.dmg dist-macos/*.zip 2>/dev/null || true)
           if [ -z "$files" ]; then
@@ -210,7 +222,7 @@ jobs:
               echo "Release $tag 已存在，直接刷新资产"
               break
             fi
-            echo "尝试创建 Release $tag（第 $i 次）"
+            echo "尝试创建 Release ${tag}（第 ${i} 次）"
             gh release create "$tag" \
               --title "法岩律师本地工作台 ${ver}（macOS）" \
               --notes "macOS 版（Apple Silicon arm64 / Intel x64 各一份）。
