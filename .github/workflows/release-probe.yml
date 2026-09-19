@@ -2,14 +2,15 @@ name: release-probe
 
 # 【一次性诊断工作流，用完即删】
 #
-# 进展：
-#   · 已排除 gh 缺失 / token 无权限 / python3 读版本号（都能正常跑）
-#   · 复刻脚本带 set -x 时，轨迹停在 `echo "release tag = ..."` 之后，退出码 1
-#   · 但单独测 files=$(ls ... || true) 完全正常（M2/M3/M4 全 rc=0）
-#   → 结论：不能再靠"带 set -e 复刻 + 猜死在哪"，必须**逐行装退出码探针且不用 set -e**，
-#     让每条命令都跑完并自报返回值，才能看出是哪一条真的失败。
+# 已确认的事实：
+#   · 失败点不是 gh 缺失 / 权限 / python3 / files 取文件（逐行探针全部 rc=0）
+#   · 复刻脚本里唯一失败的是 gh release upload（HTTP 400 Bad Content-Length，针对 0 字节文件）
+#   · 仓库里当前 0 个 Release、0 个 tag → 真实运行里 `gh release create` 从未成功
+#   · 失败步骤耗时 1 秒 → 不可能走到 5 秒一次的重试 sleep，也不可能真的开始传 100MB
 #
-# 教训：一个步骤发多条 ::warning:: 会被静默丢弃（实测 10 条只落地 3 条）→ 每步只发一条。
+# 所以必须看真实那一步的输出。作业日志已经能下载（127KB, http=200），
+# 上一轮只是切片位置偏了（尾部 2200 字节全被 checkout 收尾占满）。
+# 本轮把日志最后 9000 字节分三段打出来，每段一个步骤、每个步骤只发一条注解。
 
 on:
   push:
@@ -32,76 +33,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: A. 抓失败作业日志（确认日志格式）
+      - name: 下载日志并切片
         shell: bash
         run: |
           set +e
           L="$RUNNER_TEMP/job.log"
-          URL="https://api.github.com/repos/01Aurelex/legal-workbench-up/actions/jobs/105748342255/logs"
-          INFO=$(curl -sS -L --max-redirs 5 -o "$L" \
+          curl -sS -L --max-redirs 5 -o "$L" \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            -w 'http=%{http_code} size=%{size_download}' "$URL" 2>&1)
+            "https://api.github.com/repos/01Aurelex/legal-workbench-up/actions/jobs/105748342255/logs"
           sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$L" | tr -d '\000-\010\013\014\016-\037' > "$RUNNER_TEMP/clean.log"
-          {
-            echo "INFO=$INFO"
-            echo "--- 开头 600 字节 ---"
-            head -c 600 "$RUNNER_TEMP/clean.log"
-            echo ""
-            echo "--- 结尾 2200 字节 ---"
-            tail -c 2200 "$RUNNER_TEMP/clean.log"
-          } > "$RUNNER_TEMP/seg.log"
-          B=$(sed -e 's/%/%25/g' "$RUNNER_TEMP/seg.log" | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
-          [ -z "$B" ] && B="(空)"
-          echo "::warning title=probe-A 日志首尾::${B:0:2900}"
+          wc -c "$RUNNER_TEMP/clean.log"
+          # 三个切片，各自开头对齐到整行
+          tail -c 9000 "$RUNNER_TEMP/clean.log" | head -c 2500 > "$RUNNER_TEMP/s1.txt"
+          tail -c 6500 "$RUNNER_TEMP/clean.log" | head -c 2500 > "$RUNNER_TEMP/s2.txt"
+          tail -c 4000 "$RUNNER_TEMP/clean.log" | head -c 2500 > "$RUNNER_TEMP/s3.txt"
+          for n in 1 2 3; do echo "切片$n: $(wc -c < "$RUNNER_TEMP/s$n.txt") 字节"; done
 
-      - name: B. 逐行探针复现发布脚本（不用 set -e）
+      - name: 切片 1（日志倒数 9000~6500 字节）
         shell: bash
         run: |
-          set +e
-          mkdir -p src-tauri/target/release/bundle/dmg dist-macos
-          : > "src-tauri/target/release/bundle/dmg/法岩律师本地工作台_0.9.12_aarch64.dmg"
-          : > "dist-macos/法岩律师本地工作台_arm64.app.zip"
+          B=$(sed -e 's/%/%25/g' "$RUNNER_TEMP/s1.txt" | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
+          echo "::warning title=probe-s1::${B:0:2900}"
 
-          OUT="$RUNNER_TEMP/rel.txt"
-          : > "$OUT"
-          P() { echo "== $1 rc=$? ==" >> "$OUT"; }
+      - name: 切片 2（日志倒数 6500~4000 字节）
+        shell: bash
+        run: |
+          B=$(sed -e 's/%/%25/g' "$RUNNER_TEMP/s2.txt" | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
+          echo "::warning title=probe-s2::${B:0:2900}"
 
-          echo "--- 起点 ---" >> "$OUT"
-
-          ver=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])" 2>>"$OUT")
-          P "1 ver=[$ver]"
-
-          tag="v0.0.0-probe6"
-          case "main" in v*) echo "..." ;; *) tag="v${ver}-macos-probe" ;; esac
-          P "2 tag=[$tag]"
-
-          files=$(ls src-tauri/target/release/bundle/dmg/*.dmg dist-macos/*.zip 2>/dev/null || true)
-          P "3 files=[$files]"
-
-          if [ -z "$files" ]; then echo "EMPTY" >> "$OUT"; else echo "NOT EMPTY" >> "$OUT"; fi
-          P "4 判空结束"
-
-          for i in 1 2 3 4 5; do
-            gh release view "$tag" >/dev/null 2>&1
-            vrc=$?
-            P "5.$i release view vrc=$vrc"
-            if [ "$vrc" -eq 0 ]; then echo "已存在" >> "$OUT"; break; fi
-            gh release create "$tag" --title "probe" --notes "probe" >> "$OUT" 2>&1
-            P "6.$i release create"
-          done
-
-          gh release upload "$tag" $files --clobber >> "$OUT" 2>&1
-          P "7 release upload"
-
-          gh release view "$tag" --json url -q .url >> "$OUT" 2>&1
-          P "8 release view url"
-
-          gh release delete "$tag" --yes --cleanup-tag >> "$OUT" 2>&1
-          P "9 release delete"
-
-          cat "$OUT"
-          B=$(tail -c 2900 "$OUT" | sed -e 's/%/%25/g' | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
-          [ -z "$B" ] && B="(空)"
-          echo "::warning title=probe-B 逐行探针::${B}"
+      - name: 切片 3（日志倒数 4000~1500 字节）
+        shell: bash
+        run: |
+          B=$(sed -e 's/%/%25/g' "$RUNNER_TEMP/s3.txt" | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
+          echo "::warning title=probe-s3::${B:0:2900}"
