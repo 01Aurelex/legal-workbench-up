@@ -2,19 +2,23 @@ name: release-probe
 
 # 【一次性验证工作流，用完即删】
 #
-# 目的：钉死 build-macos 发布步骤的真实根因。
-# 从失败作业日志（用 GITHUB_TOKEN + actions:read 抓到，127KB）里读到的报错原文：
+# 从失败作业日志里拿到的报错原文（用 GITHUB_TOKEN + actions:read 抓的，127KB）：
 #
-#   2026-09-18T20:24:56.3367790Z .../41ac725e-....sh: line 8: tag?: unbound variable
-#   2026-09-18T20:24:56.3397500Z ##[error]Process completed with exit code 1.
+#   .../41ac725e-....sh: line 8: tag?: unbound variable
+#   ##[error]Process completed with exit code 1.
 #
-# 该作业的 shell 是 `shell: /bin/bash --noprofile --norc -e -o pipefail {0}`，
-# 而 macOS 的 /bin/bash 是 3.2。第 8 行正是：
+# 该步骤的 shell = `/bin/bash --noprofile --norc -e -o pipefail {0}`，
+# 而 runner 上 /bin/bash 是 3.2.57、locale 是 en_US.UTF-8。脚本第 8 行是：
 #   echo "release tag = $tag（版本 $ver）"
-# 推断：bash 3.2 把 `$tag` 后面全角括号的首字节吃进了变量名 → 配合 set -u 直接判死，
-# 于是在任何 gh 调用之前就退出（所以 1 秒失败、没有 ::error::、仓库里 0 个 Release/tag）。
 #
-# 本工作流逐条验证该机制，并验证 ${var} 花括号写法可用。
+# 本工作流用内层 bash 逐条对照，确定：
+#   · 是不是「$var 后紧跟全角字符」导致的
+#   · 是否必须同时有 set -u
+#   · ${var} 花括号写法是否可靠
+#   · 换一个全角字符（：）是否同样触发
+#
+# 注意：上一轮注解被截断，是因为 bash 把变量名里的非法字节原样打进 stderr，
+# 非法 UTF-8 会把注解消息截断。本轮内层输出统一用 iconv -c 滤掉非法字节。
 
 on:
   push:
@@ -31,39 +35,36 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 10
     steps:
-      - name: 复现与对照
+      - name: 逐用例对照
         shell: bash
         run: |
           set +e
           OUT="$RUNNER_TEMP/v.txt"
           : > "$OUT"
-          {
-            echo "== 版本与 locale =="
-            echo "PATH 上的 bash: $(command -v bash) -> $(bash --version | head -1)"
-            echo "/bin/bash      : $(/bin/bash --version | head -1)"
-            echo "locale         : $(locale 2>&1 | tr '\n' ' ')"
-            echo ""
-            echo "== 用例1  \$tag 后紧跟全角括号（真实写法）=="
-            /bin/bash --noprofile --norc -e -o pipefail -c 'set -u; tag=abc; echo "release tag = $tag（版本 1）"' 2>&1
-            echo "用例1 rc=$?"
-            echo ""
-            echo "== 用例2  \${tag} 花括号定界（修复写法）=="
-            /bin/bash --noprofile --norc -e -o pipefail -c 'set -u; tag=abc; echo "release tag = ${tag}（版本 1）"' 2>&1
-            echo "用例2 rc=$?"
-            echo ""
-            echo "== 用例3  同用例1 但 LC_ALL=C =="
-            LC_ALL=C /bin/bash --noprofile --norc -e -o pipefail -c 'set -u; tag=abc; echo "release tag = $tag（版本 1）"' 2>&1
-            echo "用例3 rc=$?"
-            echo ""
-            echo "== 用例4  同用例1 但用 PATH 上的 bash（Homebrew 5.x）=="
-            bash --noprofile --norc -e -o pipefail -c 'set -u; tag=abc; echo "release tag = $tag（版本 1）"' 2>&1
-            echo "用例4 rc=$?"
-            echo ""
-            echo "== 用例5  变量后是 ASCII 字符（对照组）=="
-            /bin/bash --noprofile --norc -e -o pipefail -c 'set -u; tag=abc; echo "release tag = $tag (version 1)"' 2>&1
-            echo "用例5 rc=$?"
-          } > "$OUT" 2>&1
+          echo "bash: $(bash --version | head -1)" >> "$OUT"
+          echo "locale: $(locale | tr '\n' ' ')" >> "$OUT"
+          echo "" >> "$OUT"
+
+          case_run() {
+            label="$1"
+            code="$2"
+            tmp="$RUNNER_TEMP/c.txt"
+            /bin/bash --noprofile --norc -e -o pipefail -c "$code" > "$tmp" 2>&1
+            rc=$?
+            clean=$(iconv -f utf-8 -t utf-8 -c "$tmp" 2>/dev/null | tr '\n' '|' | head -c 200)
+            echo "[${label}] rc=${rc}  out=[${clean}]" >> "$OUT"
+          }
+
+          case_run "1 裸变量+全角括号（真实写法）" 'set -u; tag=abc; echo "release tag = $tag（版本 1）"'
+          case_run "2 同样写法换变量名 EXE" 'set -u; EXE=/x; echo "sidecar 就绪：$EXE（约 1 MB）"'
+          case_run "3 花括号（修复写法）" 'set -u; tag=abc; echo "release tag = ${tag}（版本 1）"'
+          case_run "4 裸变量+全角冒号" 'set -u; tag=abc; echo "release tag = $tag：完成"'
+          case_run "5 裸变量+ASCII 字符" 'set -u; tag=abc; echo "release tag = $tag (version 1)"'
+          case_run "6 裸变量+全角但不加 set -u" 'tag=abc; echo "release tag = $tag（版本 1）"'
+          case_run "7 裸变量+全角句号" 'set -u; tag=abc; echo "release tag = $tag。结束"'
+          case_run "8 裸变量+全角逗号" 'set -u; tag=abc; echo "release tag = $tag，结束"'
+
           cat "$OUT"
-          B=$(tail -c 2800 "$OUT" | sed -e 's/%/%25/g' | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
+          B=$(sed -e 's/%/%25/g' "$OUT" | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
           [ -z "$B" ] && B="(空)"
-          echo "::warning title=probe-bash 全角陷阱验证::${B:0:2900}"
+          echo "::warning title=probe 全角陷阱逐用例::${B:0:2900}"
