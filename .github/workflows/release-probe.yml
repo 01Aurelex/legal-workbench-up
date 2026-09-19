@@ -2,23 +2,16 @@ name: release-probe
 
 # 【一次性验证工作流，用完即删】
 #
-# 从失败作业日志里拿到的报错原文（用 GITHUB_TOKEN + actions:read 抓的，127KB）：
+# 已用内层 bash 逐用例证实（runner: bash 3.2.57, LC_ALL=en_US.UTF-8）：
+#   `$var` 后紧跟**任何**全角字符 → bash 3.2 把该字符吃进变量名 →
+#   · 有 set -u：当场 `unbound variable`，脚本立刻退出
+#   · 无 set -u：不报错，但 $var 和那个全角字符一起被**静默吞掉**
+#   写 `${var}`（花括号）两种情况下都安全。
 #
-#   .../41ac725e-....sh: line 8: tag?: unbound variable
-#   ##[error]Process completed with exit code 1.
-#
-# 该步骤的 shell = `/bin/bash --noprofile --norc -e -o pipefail {0}`，
-# 而 runner 上 /bin/bash 是 3.2.57、locale 是 en_US.UTF-8。脚本第 8 行是：
-#   echo "release tag = $tag（版本 $ver）"
-#
-# 本工作流用内层 bash 逐条对照，确定：
-#   · 是不是「$var 后紧跟全角字符」导致的
-#   · 是否必须同时有 set -u
-#   · ${var} 花括号写法是否可靠
-#   · 换一个全角字符（：）是否同样触发
-#
-# 注意：上一轮注解被截断，是因为 bash 把变量名里的非法字节原样打进 stderr，
-# 非法 UTF-8 会把注解消息截断。本轮内层输出统一用 iconv -c 滤掉非法字节。
+# 本轮回答剩下两个问题：
+#   1) 修复写法在真实那两行的形状下确实可用（发布步骤 / build_sidecar.sh）
+#   2) build_sidecar.sh 第 106 行本该因这个坑失败，但「构建 sidecar」步骤却报成功 ——
+#      是否是 `trap ... EXIT` 把退出码吃掉了（= CI 可能把失败当成功，必须查清）
 
 on:
   push:
@@ -31,40 +24,58 @@ permissions:
 
 jobs:
   probe:
-    name: 验证 /bin/bash 3.2 全角字符陷阱
+    name: 验证修复写法与 EXIT trap 是否吞退出码
     runs-on: macos-15
     timeout-minutes: 10
     steps:
-      - name: 逐用例对照
+      - name: 验证
         shell: bash
         run: |
           set +e
           OUT="$RUNNER_TEMP/v.txt"
           : > "$OUT"
           echo "bash: $(bash --version | head -1)" >> "$OUT"
-          echo "locale: $(locale | tr '\n' ' ')" >> "$OUT"
           echo "" >> "$OUT"
 
-          case_run() {
+          run_case() {
             label="$1"
             code="$2"
             tmp="$RUNNER_TEMP/c.txt"
             /bin/bash --noprofile --norc -e -o pipefail -c "$code" > "$tmp" 2>&1
             rc=$?
-            clean=$(iconv -f utf-8 -t utf-8 -c "$tmp" 2>/dev/null | tr '\n' '|' | head -c 200)
+            clean=$(iconv -f utf-8 -t utf-8 -c "$tmp" 2>/dev/null | tr '\n' '|' | head -c 160)
             echo "[${label}] rc=${rc}  out=[${clean}]" >> "$OUT"
           }
 
-          case_run "1 裸变量+全角括号（真实写法）" 'set -u; tag=abc; echo "release tag = $tag（版本 1）"'
-          case_run "2 同样写法换变量名 EXE" 'set -u; EXE=/x; echo "sidecar 就绪：$EXE（约 1 MB）"'
-          case_run "3 花括号（修复写法）" 'set -u; tag=abc; echo "release tag = ${tag}（版本 1）"'
-          case_run "4 裸变量+全角冒号" 'set -u; tag=abc; echo "release tag = $tag：完成"'
-          case_run "5 裸变量+ASCII 字符" 'set -u; tag=abc; echo "release tag = $tag (version 1)"'
-          case_run "6 裸变量+全角但不加 set -u" 'tag=abc; echo "release tag = $tag（版本 1）"'
-          case_run "7 裸变量+全角句号" 'set -u; tag=abc; echo "release tag = $tag。结束"'
-          case_run "8 裸变量+全角逗号" 'set -u; tag=abc; echo "release tag = $tag，结束"'
+          run_case "修1 发布步骤那一行" 'set -u; ver=0.9.12; tag="v${ver}-macos"; echo "release tag = ${tag}（版本 ${ver}）"'
+          run_case "修2 build_sidecar 那一行" 'set -u; EXE=/x/legal-workbench; SIZE_MB=118.0; echo "sidecar 就绪：${EXE}（约 ${SIZE_MB:-?} MB）"'
+          run_case "修3 title 那一行" 'set -u; ver=0.9.12; echo "法岩律师本地工作台 ${ver}（macOS）"'
+
+          t1="$RUNNER_TEMP/t1.sh"
+          {
+            echo 'set -euo pipefail'
+            echo "trap 'rc=\$?; echo \"TRAP_EXIT rc=\$rc\" >&2 || true' EXIT"
+            echo 'x=1'
+            echo 'echo "$x（bad）"'
+            echo 'echo AFTER'
+          } > "$t1"
+          /bin/bash --noprofile --norc -e -o pipefail "$t1" > "$RUNNER_TEMP/o1" 2>&1
+          rc1=$?
+          echo "[trap1 现状写法] rc=${rc1}  out=[$(iconv -f utf-8 -t utf-8 -c "$RUNNER_TEMP/o1" 2>/dev/null | tr '\n' '|' | head -c 160)]" >> "$OUT"
+
+          t2="$RUNNER_TEMP/t2.sh"
+          {
+            echo 'set -euo pipefail'
+            echo "trap 'rc=\$?; echo \"TRAP_EXIT rc=\$rc\" >&2 || true; exit \"\$rc\"' EXIT"
+            echo 'x=1'
+            echo 'echo "$x（bad）"'
+            echo 'echo AFTER'
+          } > "$t2"
+          /bin/bash --noprofile --norc -e -o pipefail "$t2" > "$RUNNER_TEMP/o2" 2>&1
+          rc2=$?
+          echo "[trap2 加固写法] rc=${rc2}  out=[$(iconv -f utf-8 -t utf-8 -c "$RUNNER_TEMP/o2" 2>/dev/null | tr '\n' '|' | head -c 160)]" >> "$OUT"
 
           cat "$OUT"
           B=$(sed -e 's/%/%25/g' "$OUT" | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
           [ -z "$B" ] && B="(空)"
-          echo "::warning title=probe 全角陷阱逐用例::${B:0:2900}"
+          echo "::warning title=probe 修复写法与 trap 行为::${B:0:2900}"
