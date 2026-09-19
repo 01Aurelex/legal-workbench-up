@@ -2,20 +2,17 @@ name: release-probe
 
 # 【一次性诊断工作流，用完即删】
 #
-# 目标：拿到 build-macos 第 17 步「发布到 GitHub Release」失败的**报错原文**。
-# check-run 注解只有一条通用的 "Process completed with exit code 1."，
-# 而 REST 的 /logs 匿名读是 403，所以让工作流用自己的 GITHUB_TOKEN（+actions: read）去抓。
+# 上一轮已把范围缩到一行：复刻脚本的 set -x 轨迹停在
+#   + echo 'release tag = v0.0.0-probe4(版本 0.9.12)'
+# 之后整段 shell 就没了（退出码 1），而下一行正是
+#   files=$(ls src-tauri/target/release/bundle/dmg/*.dmg dist-macos/*.zip 2>/dev/null || true)
+# 带 `|| true` 的命令替换理论上不可能判死脚本 —— 所以本轮去掉了 set -e，
+# 逐步打 MARK，看究竟停在哪一条、以及那条命令的真实返回值。
 #
-# 前两轮 probe 已经排除的：
-#   · gh 在 macOS runner 上存在（/opt/homebrew/bin/gh 2.100.0）、gh auth 正常
-#   · `gh release create --draft` rc=0、`gh release upload` rc=0 → token 有 contents: write
-#   · python3 能读出 src-tauri/tauri.conf.json 的版本号
-# 前两轮踩到的坑（已修）：
-#   · `gh api .../logs` 拿到响应却拒答：「response contains terminal escape sequences」
-#     → 改用 curl，curl 不在意转义
-#   · `{ set -e; ... }` 里的 set -e 是全局的，命令一失败整个 shell 立即退出，
-#     连后面的 cat/注解都执行不到 → 复刻脚本必须放进子 shell `( ... )` 隔离
-#   · 一个步骤发多条 ::warning:: 会被静默丢弃（实测 10 条只落地 3 条）→ 每步只发一条
+# 同时重抓失败作业日志：上一轮从日志里按 "发布到 GitHub Release" 找 group 头没找到，
+# 本轮直接把清理后的日志「开头 + 结尾」都打出来，先确认日志格式与内容对不对。
+#
+# 教训：一个步骤发多条 ::warning:: 会被静默丢弃（实测 10 条只落地 3 条）→ 每步只发一条。
 
 on:
   push:
@@ -34,50 +31,38 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      JOB_ID: "105748342255"   # 3b34e71 那轮 macOS arm64 的作业 id
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: A. curl 抓失败作业日志，取发布步骤那一段
+      - name: A. 抓失败作业日志（首尾都打印）
         shell: bash
         run: |
           set +e
           L="$RUNNER_TEMP/job.log"
-          URL="https://api.github.com/repos/01Aurelex/legal-workbench-up/actions/jobs/${JOB_ID}/logs"
-          curl -sS -L --max-redirs 5 -o "$L" \
+          URL="https://api.github.com/repos/01Aurelex/legal-workbench-up/actions/jobs/105748342255/logs"
+          INFO=$(curl -sS -L --max-redirs 5 -o "$L" \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            -w 'http=%{http_code} size=%{size_download}\n' "$URL" > "$RUNNER_TEMP/curl.info" 2>&1
-          rc=$?
-          echo "curl rc=$rc $(cat "$RUNNER_TEMP/curl.info")"
-          echo "首行: $(head -c 200 "$L" | tr '\n' '|')"
-
-          # 去 ANSI 转义与控制字符
+            -w 'http=%{http_code} size=%{size_download}' "$URL" 2>&1)
+          echo "curl: $INFO"
           sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$L" | tr -d '\000-\010\013\014\016-\037' > "$RUNNER_TEMP/clean.log"
 
-          # 取「发布到 GitHub Release」那个 group 的内容
-          awk '
-            /##\[group\]/ { g=NR }
-            /发布到 GitHub Release/ { t=NR }
-            { L[NR]=$0 }
-            END {
-              if (!t) { print "!! 日志里没找到发布步骤的 group 头"; exit }
-              for (i=t; i<=NR; i++) {
-                if (i>t && L[i] ~ /##\[endgroup\]/) { print L[i]; break }
-                print L[i]
-              }
-            }' "$RUNNER_TEMP/clean.log" > "$RUNNER_TEMP/seg.log"
+          {
+            echo "INFO=$INFO"
+            echo "--- 开头 500 字节 ---"
+            head -c 500 "$RUNNER_TEMP/clean.log"
+            echo ""
+            echo "--- 结尾 2300 字节 ---"
+            tail -c 2300 "$RUNNER_TEMP/clean.log"
+          } > "$RUNNER_TEMP/seg.log"
 
-          echo "段长 $(wc -c < "$RUNNER_TEMP/seg.log") 字节"
-          if [ ! -s "$RUNNER_TEMP/seg.log" ]; then tail -c 2000 "$RUNNER_TEMP/clean.log" > "$RUNNER_TEMP/seg.log"; fi
-
-          B=$(tail -c 2900 "$RUNNER_TEMP/seg.log" | sed -e 's/%/%25/g' | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
+          B=$(sed -e 's/%/%25/g' "$RUNNER_TEMP/seg.log" | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
           [ -z "$B" ] && B="(空)"
-          echo "::warning title=probe-A 真实报错原文::${B}"
+          echo "::warning title=probe-A 日志首尾::${B:0:2900}"
 
-      - name: B. 复刻发布脚本（子 shell 隔离 set -e）定位死在哪一行
+      - name: B. 逐步复现 files=$(ls ...)（无 set -e，打 MARK）
         shell: bash
         run: |
           set +e
@@ -86,29 +71,35 @@ jobs:
           : > "dist-macos/法岩律师本地工作台_arm64.app.zip"
 
           OUT="$RUNNER_TEMP/rel.txt"
-          (
-            set -x
-            set -euo pipefail
-            ver=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
-            tag="v0.0.0-probe4"
-            echo "release tag = $tag(版本 $ver)"
-            files=$(ls src-tauri/target/release/bundle/dmg/*.dmg dist-macos/*.zip 2>/dev/null || true)
-            if [ -z "$files" ]; then echo "没有可发布的产物"; exit 1; fi
-            echo "$files"
-            for i in 1 2 3 4 5; do
-              if gh release view "$tag" >/dev/null 2>&1; then echo "已存在"; break; fi
-              echo "尝试创建(第 $i 次)"
-              gh release create "$tag" --title "probe" --notes "probe" || echo "创建失败"
-              sleep 5
-            done
-            gh release upload "$tag" $files --clobber
-            gh release view "$tag" --json url -q .url
-          ) > "$OUT" 2>&1
-          RC=$?
-          echo "B 复刻脚本退出码=$RC" >> "$OUT"
-          cat "$OUT"
-          gh release delete v0.0.0-probe4 --yes --cleanup-tag >/dev/null 2>&1
+          : > "$OUT"
 
-          B=$(tail -c 2700 "$OUT" | sed -e 's/%/%25/g' | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
+          echo "M1: 造出的文件" >> "$OUT"
+          ls -la src-tauri/target/release/bundle/dmg dist-macos >> "$OUT" 2>&1
+          echo "M1 rc=$?" >> "$OUT"
+
+          echo "M2: 不带 set -e，原样执行 files=\$(ls ... || true)" >> "$OUT"
+          set -x
+          files=$(ls src-tauri/target/release/bundle/dmg/*.dmg dist-macos/*.zip 2>/dev/null || true)
+          rc2=$?
+          set +x
+          echo "M2 rc=$rc2 files=[$files]" >> "$OUT"
+
+          echo "M3: 拆开看 ls 单独返回值" >> "$OUT"
+          ls src-tauri/target/release/bundle/dmg/*.dmg dist-macos/*.zip > "$RUNNER_TEMP/ls.out" 2>&1
+          echo "M3 ls_rc=$? out=$(head -c 300 "$RUNNER_TEMP/ls.out" | tr '\n' '|')" >> "$OUT"
+
+          echo "M4: 带 set -euo pipefail 再跑一次（子 shell 隔离）" >> "$OUT"
+          (
+            set -euo pipefail
+            echo "M4a 进入子 shell"
+            f2=$(ls src-tauri/target/release/bundle/dmg/*.dmg dist-macos/*.zip 2>/dev/null || true)
+            echo "M4b 赋值成功 f2=[$f2]"
+            if [ -z "$f2" ]; then echo "M4c 判定为空 → 会 exit 1"; exit 1; fi
+            echo "M4d 判定非空"
+          ) >> "$OUT" 2>&1
+          echo "M4 子 shell 退出码=$?" >> "$OUT"
+
+          cat "$OUT"
+          B=$(tail -c 2900 "$OUT" | sed -e 's/%/%25/g' | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
           [ -z "$B" ] && B="(空)"
-          echo "::warning title=probe-B 退出码=$RC 复刻记录::${B}"
+          echo "::warning title=probe-B 逐步复现::${B}"
