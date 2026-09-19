@@ -3,15 +3,15 @@ name: release-probe
 # 【一次性诊断工作流，用完即删】
 #
 # 背景：build-macos 的全部构建步骤都成功（sidecar / 打包 dmg / 校验 / 上传构件），
-# 只有最后一步「发布到 GitHub Release」失败，而且 check-run 注解里只有一条
+# 只有最后一步「发布到 GitHub Release」失败，而 check-run 注解里只有一条
 # 通用的 "Process completed with exit code 1."，看不到真实报错。
 #
-# 为什么要单独做一个 probe：一次完整 macOS 构建要 16 分钟，而排查只需要回答
-# 一个问题 —— 「在 macOS runner 上，GITHUB_TOKEN 到底能不能创建 Release」。
-# 本工作流不跑构建，只跑 gh 链路，一分钟内出结论。
+# 为什么要单独做 probe：一次完整 macOS 构建要 16 分钟，而排查只需要回答一个问题
+# ——「在 macOS runner 上，GITHUB_TOKEN 能不能走完 Release 的 create/upload」。
+# 本工作流不跑构建，一分钟内出结论。
 #
-# 结论以 ::warning:: 注解输出。原因：REST 的 /logs 需要 admin 权限，
-# 作业摘要不会出现在 check-run 的 output 里，注解是公开仓库唯一能匿名读到的通道。
+# 输出方式：把完整记录压进**一条** ::warning:: 注解（换行转义成 %0A）。
+# 教训：逐行发多条注解会被静默丢弃（实测发 10 条只落地 3 条），单条反而可靠。
 
 on:
   push:
@@ -38,36 +38,41 @@ jobs:
           set +e
           OUT="$RUNNER_TEMP/probe.txt"
           : > "$OUT"
-          log() { echo "$*" >> "$OUT"; }
 
-          # cap <标签> <命令...>：把退出码与截断后的输出写成一行紧凑结论
-          cap() {
-            local label="$1"; shift
-            local tmp="$RUNNER_TEMP/cap.txt"
-            "$@" > "$tmp" 2>&1
-            local rc=$?
-            log "【$label】exit=$rc out=$(head -c 260 "$tmp" | tr '\n' '|')"
-            return 0
-          }
+          echo "【环境】runner=$RUNNER_OS/$(uname -m) ref=${GITHUB_REF_NAME:-?} event=${GITHUB_EVENT_NAME:-?}" >> "$OUT"
+          echo "【gh】$(command -v gh || echo MISSING) | $(gh --version 2>&1 | head -1)" >> "$OUT"
+          echo "【python3】$(command -v python3 || echo MISSING)" >> "$OUT"
+          V=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])" 2>&1)
+          echo "【python3 读版本】rc=$? out=$V" >> "$OUT"
+          echo "【gh auth】$(gh auth status 2>&1 | tr '\n' '|')" >> "$OUT"
 
-          GH=$(command -v gh || echo MISSING)
-          log "【环境】runner=$RUNNER_OS/$(uname -m) ref=${GITHUB_REF_NAME:-?} event=${GITHUB_EVENT_NAME:-?} gh=$GH python3=$(command -v python3 || echo MISSING)"
-          log "【gh 版本】$(gh --version 2>&1 | head -1)"
-          cap "读版本号：python3 -c json" python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])"
-          log "【gh auth status】$(gh auth status 2>&1 | tr '\n' '|' | head -c 200)"
-
-          # --- 用例 1：最朴素的链路 ---
           tag="v0.0.0-probe"
-          cap "1-gh release view（不存在时）" gh release view "$tag"
-          cap "1-gh release create --draft" gh release create "$tag" --draft --title "probe" --notes "probe"
-          echo probe > "$RUNNER_TEMP/probe-asset.txt"
-          cap "1-gh release upload" gh release upload "$tag" "$RUNNER_TEMP/probe-asset.txt" --clobber
-          cap "1-gh release view --json url" gh release view "$tag" --json url -q .url
-          cap "1-gh release delete --cleanup-tag" gh release delete "$tag" --yes --cleanup-tag
 
-          # --- 用例 2：完全照抄真实那一步的多行 --notes，验证参数本身没问题 ---
+          echo "--- 用例1: 不存在时 view ---" >> "$OUT"
+          gh release view "$tag" >> "$OUT" 2>&1
+          echo "rc=$?" >> "$OUT"
+
+          echo "--- 用例1: create --draft ---" >> "$OUT"
+          gh release create "$tag" --draft --title "probe" --notes "probe" >> "$OUT" 2>&1
+          echo "rc=$?" >> "$OUT"
+
+          echo probe > "$RUNNER_TEMP/probe-asset.txt"
+          echo "--- 用例1: upload ---" >> "$OUT"
+          gh release upload "$tag" "$RUNNER_TEMP/probe-asset.txt" --clobber >> "$OUT" 2>&1
+          echo "rc=$?" >> "$OUT"
+
+          echo "--- 用例1: view --json url ---" >> "$OUT"
+          gh release view "$tag" --json url -q .url >> "$OUT" 2>&1
+          echo "rc=$?" >> "$OUT"
+
+          echo "--- 用例1: delete --cleanup-tag ---" >> "$OUT"
+          gh release delete "$tag" --yes --cleanup-tag >> "$OUT" 2>&1
+          echo "rc=$?" >> "$OUT"
+
+          # 用例 2：完全照抄真实那一步的多行 --notes，验证参数本身没问题
           tag2="v0.0.0-probe2"
-          cap "2-gh release create（多行 notes）" gh release create "$tag2" --draft \
+          echo "--- 用例2: create 多行 notes ---" >> "$OUT"
+          gh release create "$tag2" --draft \
             --title "法岩律师本地工作台 0.0.0（macOS）" \
             --notes "macOS 版（Apple Silicon arm64 / Intel x64 各一份）。
 
@@ -76,17 +81,16 @@ jobs:
 
           · \`*_aarch64.dmg\` → Apple 芯片（M 系列）
           · \`*_x64.dmg\`     → Intel 芯片
-          · \`*.app.zip\`     → 不想用 dmg 时的备用形态（保留符号链接与可执行位）"
-          cap "2-gh release delete --cleanup-tag" gh release delete "$tag2" --yes --cleanup-tag
+          · \`*.app.zip\`     → 不想用 dmg 时的备用形态（保留符号链接与可执行位）" >> "$OUT" 2>&1
+          echo "rc=$?" >> "$OUT"
+
+          echo "--- 用例2: delete ---" >> "$OUT"
+          gh release delete "$tag2" --yes --cleanup-tag >> "$OUT" 2>&1
+          echo "rc=$?" >> "$OUT"
 
           echo "===== 完整记录 ====="
           cat "$OUT"
 
-          # 转成注解（最多 10 条；% 与换行需转义）
-          i=0
-          while IFS= read -r line; do
-            i=$((i+1))
-            [ "$i" -gt 10 ] && break
-            msg=$(printf '%s' "$line" | sed -e 's/%/%25/g' | head -c 900)
-            echo "::warning title=probe-${i}::${msg}"
-          done < "$OUT"
+          # 压成单条注解：换行→%0A，%→%25，控制字符去掉
+          BODY=$(head -c 3000 "$OUT" | sed -e 's/%/%25/g' | awk 'BEGIN{ORS=""}{print $0 "%0A"}')
+          echo "::warning title=release-probe 结论::${BODY}"
