@@ -234,15 +234,8 @@ jobs:
           # 注意：arm64 与 x64 是两个并行 job，可能同时走到这里抢着创建同一个 tag。
           # 谁先建成功都行，后到的那个拿到"已存在"错误也不该让整个 job 失败，
           # 所以下面用重试 + 以"视图能读到"作为唯一成功判据。
-          for i in 1 2 3 4 5; do
-            if gh release view "$tag" >/dev/null 2>&1; then
-              echo "Release $tag 已存在，直接刷新资产"
-              break
-            fi
-            echo "尝试创建 Release ${tag}（第 ${i} 次）"
-            gh release create "$tag" \
-              --title "法岩律师本地工作台 ${ver}（macOS）" \
-              --notes "macOS 版（Apple Silicon arm64 / Intel x64 各一份）。
+          TITLE="法岩律师本地工作台 ${ver}（macOS）"
+          NOTES="macOS 版（Apple Silicon arm64 / Intel x64 各一份）。
 
           **这是 ad-hoc 签名、未经 Apple 公证的构建**，首次打开可能需要放行：
           安装说明见仓库 README 的「macOS 安装」一节。
@@ -252,7 +245,15 @@ jobs:
           · \`legal-workbench_<架构>.app.zip\`     → 不想用 dmg 时的备用形态（保留符号链接与可执行位）
 
           下载文件名是 ASCII 的（GitHub 会剥掉资产名里的中文），
-          但 dmg 内的应用仍叫「法岩律师本地工作台.app」，拖进「应用程序」后名字不变。" \
+          但 dmg 内的应用仍叫「法岩律师本地工作台.app」，拖进「应用程序」后名字不变。"
+
+          for i in 1 2 3 4 5; do
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "Release $tag 已存在，直接刷新资产"
+              break
+            fi
+            echo "尝试创建 Release ${tag}（第 ${i} 次）"
+            gh release create "$tag" --title "$TITLE" --notes "$NOTES" \
               || echo "创建失败（多半是另一个架构刚建好），5 秒后复查"
             sleep 5
           done
@@ -260,6 +261,11 @@ jobs:
             echo "::error::Release $tag 创建失败，请检查 workflow 的 contents: write 权限"
             exit 1
           fi
+
+          # 标题与说明每次都用仓库里的最新文本刷一遍。
+          # 为什么要显式 edit：重跑时 Release 已存在，上面会跳过 create，
+          # 于是改过的说明永远不生效，Release 页会一直挂着旧文案。
+          gh release edit "$tag" --title "$TITLE" --notes "$NOTES" >/dev/null
 
           # 两个架构产出的是不同文件名，互不覆盖；--clobber 只用于重跑时刷新同名资产
           gh release upload "$tag" dist-release/* --clobber
